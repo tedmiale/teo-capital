@@ -1,11 +1,21 @@
-// Vercel serverless function. Lives at the URL /api/teo on your deployed site.
-// The app's front-end posts here instead of directly to Anthropic, so the API key
-// stays on the server and never reaches the browser.
+// /api/teo — proxy to Anthropic, gated by operator code.
+// Only requests bearing the correct x-operator-code header reach Anthropic.
+// Visitors without the code get 403 immediately — no tokens spent.
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "POST only" });
   }
+
+  const opCode = req.headers["x-operator-code"];
+  const expected = process.env.OPERATOR_CODE;
+  if (!expected) {
+    return res.status(500).json({ error: "OPERATOR_CODE env var not configured on the server." });
+  }
+  if (!opCode || opCode !== expected) {
+    return res.status(403).json({ error: "Not authorized. Operator code required to spend tokens." });
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return res.status(500).json({ error: "ANTHROPIC_API_KEY env var not set on the server." });
@@ -32,7 +42,6 @@ export default async function handler(req, res) {
   }
 }
 
-// Tell Vercel to allow up to 5 minutes for this function (Anthropic web_search can be slow).
 export const config = {
   maxDuration: 300,
 };

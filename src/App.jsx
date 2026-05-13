@@ -66,14 +66,7 @@ const GRADE_SCHEMA = {
 };
 
 
-async function hashPIN(pin) {
-  const enc = new TextEncoder().encode(pin + "ccm2026");
-  const buf = await crypto.subtle.digest("SHA-256", enc);
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
-}
-
-
-async function callTeo(system, user, schema, timeoutMs = 240000) {
+async function callTeo(system, user, schema, operatorCode, timeoutMs = 240000) {
   const tools = [{ type: "web_search_20250305", name: "web_search" }];
   if (schema) {
     tools.push({
@@ -91,7 +84,10 @@ async function callTeo(system, user, schema, timeoutMs = 240000) {
   try {
     const res = await fetch("/api/teo", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-operator-code": operatorCode || "",
+      },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 8000,
@@ -101,6 +97,9 @@ async function callTeo(system, user, schema, timeoutMs = 240000) {
       }),
       signal: controller.signal,
     });
+    if (res.status === 403) {
+      throw new Error("Operator code rejected — not authorized to spend tokens.");
+    }
     if (!res.ok) {
       const errBody = await res.text().catch(() => "");
       throw new Error("API error " + res.status + (errBody ? ": " + errBody.slice(0, 200) : ""));
@@ -108,7 +107,7 @@ async function callTeo(system, user, schema, timeoutMs = 240000) {
     data = await res.json();
   } catch (e) {
     if (e.name === "AbortError") {
-      const err = new Error("Request timed out after " + Math.round(timeoutMs/1000) + "s. The model or web search may be slow right now — wait a minute and tap CHECK & DECIDE again.");
+      const err = new Error("Request timed out after " + Math.round(timeoutMs/1000) + "s. The model or web search may be slow right now — wait a minute and try again.");
       err.timedOut = true;
       throw err;
     }
@@ -118,10 +117,8 @@ async function callTeo(system, user, schema, timeoutMs = 240000) {
   }
 
   if (schema) {
-    // Preferred path: model called the submit tool — input is guaranteed valid JSON.
     const submit = data.content.find(b => b.type === "tool_use" && b.name === "submit");
     if (submit && submit.input) return JSON.stringify(submit.input);
-    // Fallback: model ignored the tool and wrote JSON as text. Let parseJSON try.
     const text = data.content.filter(b => b.type === "text").map(b => b.text).join("\n");
     if (text.trim()) return text;
     throw new Error("Model returned no usable response (stop_reason: " + (data.stop_reason || "unknown") + ")");
@@ -168,7 +165,7 @@ function parseJSON(raw) {
 }
 
 
-async function makeDecision(holdings, cash, snapNum, priorStops) {
+async function makeDecision(holdings, cash, snapNum, priorStops, operatorCode) {
   const isFirst = holdings.length === 0 && cash >= SEED;
   const now = new Date().toLocaleString("en-US", {
     weekday:"short", month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit"
@@ -192,7 +189,7 @@ async function makeDecision(holdings, cash, snapNum, priorStops) {
   let lastErr = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const raw = await callTeo(system, user, DECISION_SCHEMA);
+      const raw = await callTeo(system, user, DECISION_SCHEMA, operatorCode);
       data = parseJSON(raw);
       if (data.holdings_after && data.fetched_prices) break;
       data = null;
@@ -221,7 +218,7 @@ async function makeDecision(holdings, cash, snapNum, priorStops) {
   return { data, prices, totalValue };
 }
 
-async function runGrade(state) {
+async function runGrade(state, operatorCode) {
   const hist = (state.snapshots || []).map((s, i) =>
     "#" + (i+1) + " (" + s.timestamp + "): $" + s.totalValue.toFixed(2) + " | " +
     (s.transactions.length ? s.transactions.map(t => t.action + " " + t.ticker).join(", ") : "hold") +
@@ -229,7 +226,7 @@ async function runGrade(state) {
   ).join("\n");
   const system = "Grade this 4-week trading record. Be brutally honest. Respond ONLY with JSON: {\"grade\":\"A-F\",\"score\":0-100,\"headline\":\"verdict\",\"what_worked\":[\"...\"],\"what_failed\":[\"...\"],\"missed_opportunities\":[\"...\"],\"would_do_differently\":[\"...\"],\"benchmark\":\"vs SPY\",\"lesson\":\"takeaway\"}";
   const user = "Started $5000. Now $" + state.totalValue.toFixed(2) + " (" + ((state.totalValue/SEED-1)*100).toFixed(2) + "%). " + (state.snapshots||[]).length + " decisions.\n\n" + hist + "\n\nSearch market context. Grade honestly.";
-  return parseJSON(await callTeo(system, user, GRADE_SCHEMA));
+  return parseJSON(await callTeo(system, user, GRADE_SCHEMA, operatorCode));
 }
 
 
@@ -362,83 +359,40 @@ function GradeCard({ grade }) {
 }
 
 
-function PinModal({ mode, onSubmit, onCancel, onNuclear, lockoutUntil }) {
-  const [pin, setPin] = useState("");
-  const [pin2, setPin2] = useState("");
+function OperatorLogin({ onSubmit, onCancel }) {
+  const [code, setCode] = useState("");
   const [err, setErr] = useState("");
   const [shk, setShk] = useState(false);
-  const [nuke, setNuke] = useState(false);
-  const [nukeText, setNukeText] = useState("");
-  const isLocked = lockoutUntil && Date.now() < lockoutUntil;
-  const lockSec = isLocked ? Math.ceil((lockoutUntil - Date.now()) / 1000) : 0;
-  const [, tick] = useState(0);
-  useEffect(function() {
-    if (!isLocked) return;
-    const t = setInterval(function() { tick(function(x) { return x+1; }); }, 500);
-    return function() { clearInterval(t); };
-  }, [isLocked]);
 
   const submit = function() {
-    if (mode === "create") {
-      if (pin.length !== 4) { setErr("4 digits required"); setShk(true); setTimeout(function(){setShk(false);},400); return; }
-      if (pin !== pin2) { setErr("PINs don't match"); setShk(true); setTimeout(function(){setShk(false);},400); return; }
-      onSubmit(pin);
-    } else {
-      if (pin.length !== 4) { setErr("Enter PIN"); setShk(true); setTimeout(function(){setShk(false);},400); return; }
-      onSubmit(pin);
-    }
+    if (!code.trim()) { setErr("Enter the operator code"); setShk(true); setTimeout(function(){setShk(false);},400); return; }
+    onSubmit(code.trim());
   };
 
-  const inp = {background:C.bg3,border:"1px solid " + C.border,color:C.text,padding:"14px 16px",borderRadius:8,fontSize:24,letterSpacing:8,width:"100%",textAlign:"center",fontWeight:700};
+  const inp = {background:C.bg3,border:"1px solid " + C.border,color:C.text,padding:"14px 16px",borderRadius:8,fontSize:15,letterSpacing:1,width:"100%",textAlign:"center"};
 
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}}>
       <div className={shk ? "shake" : "fu"} style={{background:C.bg2,border:"1px solid " + C.gold + "55",borderRadius:14,padding:28,maxWidth:380,width:"100%",fontFamily:F}}>
         <div style={{textAlign:"center",marginBottom:20}}>
-          <div style={{fontSize:28,marginBottom:8}}>{mode==="create" ? "\ud83d\udd10" : isLocked ? "\u23f0" : "\ud83d\udd13"}</div>
-          <div style={{fontSize:17,fontWeight:700,fontFamily:FS,color:C.text,marginBottom:6}}>
-            {mode==="create" ? "Set Your PIN" : isLocked ? "Locked Out" : "Enter PIN"}
-          </div>
-          <div style={{fontSize:11,color:C.muted,lineHeight:1.6}}>
-            {mode==="create" ? "Choose a 4-digit PIN to protect your portfolio." : isLocked ? "Too many attempts. Wait " + lockSec + "s." : "Enter PIN to authorize."}
-          </div>
+          <div style={{fontSize:28,marginBottom:8}}>{"\ud83d\udd11"}</div>
+          <div style={{fontSize:17,fontWeight:700,fontFamily:FS,color:C.text,marginBottom:6}}>Operator Mode</div>
+          <div style={{fontSize:11,color:C.muted,lineHeight:1.6}}>Enter the operator code to deploy capital and run checks. Visitors without the code can only view.</div>
         </div>
-        {!isLocked && (
-          <div>
-            <input type="password" inputMode="numeric" maxLength={4} value={pin} onChange={function(e){setPin(e.target.value.replace(/\D/g,""));}} placeholder="••••" autoFocus style={inp} />
-            {mode === "create" && <input type="password" inputMode="numeric" maxLength={4} value={pin2} onChange={function(e){setPin2(e.target.value.replace(/\D/g,""));}} placeholder="confirm" style={Object.assign({},inp,{marginTop:10})} />}
-            {err && <div style={{color:C.red,fontSize:11,marginTop:10,textAlign:"center"}}>{err}</div>}
-            <div style={{display:"flex",gap:8,marginTop:18}}>
-              <button onClick={onCancel} style={{flex:1,background:"transparent",color:C.muted,border:"1px solid " + C.border,padding:12,borderRadius:8,cursor:"pointer",fontSize:12,fontFamily:F}}>CANCEL</button>
-              <button onClick={submit} style={{flex:2,background:"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",color:"#0a0800",border:"none",padding:12,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:FS,letterSpacing:1}}>
-                {mode==="create" ? "SET PIN" : "AUTHORIZE"}
-              </button>
-            </div>
-          </div>
-        )}
-        {mode !== "create" && (
-          <div style={{marginTop:20,paddingTop:18,borderTop:"1px solid " + C.border,textAlign:"center"}}>
-            {!nuke ? (
-              <button onClick={function(){setNuke(true);}} style={{background:"transparent",color:C.dim,border:"none",fontSize:10,fontFamily:F,cursor:"pointer",textDecoration:"underline"}}>Forgot PIN? Nuclear reset</button>
-            ) : (
-              <div>
-                <div style={{fontSize:11,color:C.red,marginBottom:10,lineHeight:1.6}}>This wipes EVERYTHING. Cannot be undone.</div>
-                <input type="text" value={nukeText} onChange={function(e){setNukeText(e.target.value);}} placeholder="type WIPE to confirm" style={Object.assign({},inp,{fontSize:14,letterSpacing:2,padding:"10px 14px"})} />
-                <div style={{display:"flex",gap:8,marginTop:10}}>
-                  <button onClick={function(){setNuke(false);setNukeText("");}} style={{flex:1,background:"transparent",color:C.muted,border:"1px solid " + C.border,padding:10,borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:F}}>BACK</button>
-                  <button onClick={function(){if(nukeText==="WIPE")onNuclear();}} disabled={nukeText!=="WIPE"} style={{flex:1,background:nukeText==="WIPE"?C.red:"transparent",color:nukeText==="WIPE"?"#fff":C.dim,border:"1px solid " + (nukeText==="WIPE"?C.red:C.border),padding:10,borderRadius:6,cursor:nukeText==="WIPE"?"pointer":"not-allowed",fontSize:11,fontFamily:F,fontWeight:700}}>NUKE IT</button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        <input type="password" value={code} onChange={function(e){setCode(e.target.value);}} placeholder="operator code" autoFocus
+          onKeyDown={function(e){if(e.key==="Enter")submit();}} style={inp} />
+        {err && <div style={{color:C.red,fontSize:11,marginTop:10,textAlign:"center"}}>{err}</div>}
+        <div style={{display:"flex",gap:8,marginTop:18}}>
+          <button onClick={onCancel} style={{flex:1,background:"transparent",color:C.muted,border:"1px solid " + C.border,padding:12,borderRadius:8,cursor:"pointer",fontSize:12,fontFamily:F}}>CANCEL</button>
+          <button onClick={submit} style={{flex:2,background:"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",color:"#0a0800",border:"none",padding:12,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:FS,letterSpacing:1}}>UNLOCK</button>
+        </div>
       </div>
     </div>
   );
 }
 
 
-const BLANK = {pinHash:null,holdings:[],cash:SEED,totalValue:SEED,snapshots:[],history:[{label:"Start",value:SEED}],grade:null,failedAttempts:0,lockoutUntil:0};
+const BLANK = {holdings:[],cash:SEED,totalValue:SEED,snapshots:[],history:[{label:"Start",value:SEED}],grade:null};
 
 export default function App() {
   const [state, setState] = useState(null);
@@ -448,15 +402,25 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [grading, setGrading] = useState(false);
   const [error, setError] = useState(null);
-  const [pinModal, setPinModal] = useState(null);
-  const [pendingAction, setPendingAction] = useState(null);
+  const [operatorCode, setOperatorCode] = useState(null);
+  const [showOpLogin, setShowOpLogin] = useState(false);
 
+  // On mount: fetch shared state from server, and try to restore operator code from this device.
   useEffect(function() {
     (async function() {
       try {
-        const s = localStorage.getItem("ccm_adv_v2");
-        setState(s ? JSON.parse(s) : BLANK);
+        const r = await fetch("/api/state");
+        if (r.ok) {
+          const body = await r.json();
+          setState(body && body.state ? body.state : BLANK);
+        } else {
+          setState(BLANK);
+        }
       } catch(e) { setState(BLANK); }
+      try {
+        const saved = localStorage.getItem("teo_op_code");
+        if (saved) setOperatorCode(saved);
+      } catch(e) {}
       setLoading(false);
     })();
   }, []);
@@ -465,45 +429,39 @@ export default function App() {
     if (state && state.snapshots && state.snapshots.length) setSnapIdx(state.snapshots.length - 1);
   }, [state && state.snapshots && state.snapshots.length]);
 
-  const save = async function(next) { try { localStorage.setItem("ccm_adv_v2", JSON.stringify(next)); } catch(e) {} };
-
-  const guard = function(action) {
-    if (!state.pinHash) { setPendingAction(function(){return action;}); setPinModal("create"); }
-    else { setPendingAction(function(){return action;}); setPinModal("verify"); }
-  };
-
-  const handlePinSubmit = async function(pin) {
-    const hash = await hashPIN(pin);
-    if (pinModal === "create") {
-      const next = Object.assign({}, state, {pinHash:hash, failedAttempts:0, lockoutUntil:0});
-      await save(next); setState(next); setPinModal(null);
-      if (pendingAction) { pendingAction(); setPendingAction(null); }
-    } else {
-      if (hash === state.pinHash) {
-        const next = Object.assign({}, state, {failedAttempts:0, lockoutUntil:0});
-        await save(next); setState(next); setPinModal(null);
-        if (pendingAction) { pendingAction(); setPendingAction(null); }
-      } else {
-        const fa = (state.failedAttempts || 0) + 1;
-        const lo = fa >= 5 ? Date.now() + 60000 : 0;
-        const next = Object.assign({}, state, {failedAttempts:fa, lockoutUntil:lo});
-        await save(next); setState(next);
-        setError(fa >= 5 ? "Locked 60s" : "Wrong PIN (" + fa + "/5)");
-        setTimeout(function(){setError(null);}, 3000);
+  // Persist state to server. Requires operator code.
+  const save = async function(next) {
+    try {
+      const r = await fetch("/api/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-operator-code": operatorCode || "" },
+        body: JSON.stringify({ state: next }),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error("Save failed: " + r.status + (t ? " " + t.slice(0,120) : ""));
       }
-    }
+    } catch(e) { setError("Could not save: " + e.message); }
   };
 
-  const handleNuclear = async function() {
-    try { localStorage.removeItem("ccm_adv_v2"); } catch(e) {}
-    setState(BLANK); setPinModal(null); setPendingAction(null); setError(null);
+  const handleOpSubmit = function(code) {
+    setOperatorCode(code);
+    try { localStorage.setItem("teo_op_code", code); } catch(e) {}
+    setShowOpLogin(false);
   };
+
+  const handleOpLogout = function() {
+    setOperatorCode(null);
+    try { localStorage.removeItem("teo_op_code"); } catch(e) {}
+  };
+
+  const isOperator = !!operatorCode;
 
   const doDecision = async function() {
     if (busy) return; setBusy(true); setError(null);
     try {
       const priorStops = state.snapshots && state.snapshots.length ? state.snapshots[state.snapshots.length-1].stopLimits || [] : [];
-      const res = await makeDecision(state.holdings, state.cash, state.snapshots.length, priorStops);
+      const res = await makeDecision(state.holdings, state.cash, state.snapshots.length, priorStops, operatorCode);
       var d = res.data;
       var macro = d.macro || "";
       var snap = {
@@ -545,7 +503,7 @@ export default function App() {
   const doGrade = async function() {
     if (grading || !state.snapshots.length) return; setGrading(true); setError(null);
     try {
-      var g = await runGrade(state);
+      var g = await runGrade(state, operatorCode);
       var next = Object.assign({}, state, {grade:g});
       await save(next); setState(next); setTab("grade");
     } catch(e) { setError(e.message); }
@@ -553,7 +511,8 @@ export default function App() {
   };
 
   const doReset = async function() {
-    try { localStorage.removeItem("ccm_adv_v2"); } catch(e) {}
+    if (!isOperator) return;
+    await save(BLANK);
     setState(BLANK); setError(null); setTab("latest");
   };
 
@@ -569,12 +528,12 @@ export default function App() {
   var latest = state.snapshots.length ? state.snapshots[state.snapshots.length-1] : null;
   var viewSnap = state.snapshots[snapIdx] || null;
   var latestPrices = latest ? (latest.fetchedPrices || {}) : {};
-  var pinEl = pinModal ? <PinModal mode={pinModal} lockoutUntil={state.lockoutUntil} onSubmit={handlePinSubmit} onCancel={function(){setPinModal(null);setPendingAction(null);}} onNuclear={handleNuclear} /> : null;
+  var opEl = showOpLogin ? <OperatorLogin onSubmit={handleOpSubmit} onCancel={function(){setShowOpLogin(false);}} /> : null;
 
   /* ── SPLASH ── */
   if (isFirst && !busy) return (
     <div>
-      {pinEl}
+      {opEl}
       <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 16px",fontFamily:F}}>
         <div style={{maxWidth:480,width:"100%"}} className="fu">
           <div style={{textAlign:"center",marginBottom:32}}>
@@ -591,17 +550,23 @@ export default function App() {
               "Priced-in vs genuine opportunity analysis",
               "Stop-limit orders on every position",
               "Cash reserves when uncertain",
-              "PIN-protected from accidental changes",
             ].map(function(t, i) {
-              return <div key={i} style={{display:"flex",gap:10,marginBottom:i<6?8:0,alignItems:"flex-start"}}>
+              return <div key={i} style={{display:"flex",gap:10,marginBottom:i<5?8:0,alignItems:"flex-start"}}>
                 <span style={{color:C.gold,fontSize:10,flexShrink:0}}>{"\u25c8"}</span>
                 <span style={{fontSize:11,color:C.text,lineHeight:1.6}}>{t}</span>
               </div>;
             })}
           </div>
-          <button onClick={function(){guard(doDecision);}} disabled={busy} style={{width:"100%",background:"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",color:"#0a0800",border:"none",padding:15,borderRadius:10,cursor:"pointer",fontSize:14,fontWeight:700,fontFamily:FS,letterSpacing:1}}>
-            {"\u25b6"}  DEPLOY $5,000 NOW
-          </button>
+          {isOperator ? (
+            <button onClick={doDecision} disabled={busy} style={{width:"100%",background:"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",color:"#0a0800",border:"none",padding:15,borderRadius:10,cursor:"pointer",fontSize:14,fontWeight:700,fontFamily:FS,letterSpacing:1}}>
+              {"\u25b6"}  DEPLOY $5,000 NOW
+            </button>
+          ) : (
+            <div style={{background:C.bg2,border:"1px dashed " + C.border,borderRadius:10,padding:"18px 20px",textAlign:"center"}}>
+              <div style={{fontSize:11,color:C.textdim,lineHeight:1.8,marginBottom:14}}>Teo hasn't deployed capital yet. Only the operator can start the sprint.</div>
+              <button onClick={function(){setShowOpLogin(true);}} style={{background:"transparent",color:C.gold,border:"1px solid " + C.gold + "55",padding:"10px 20px",borderRadius:8,cursor:"pointer",fontSize:11,fontFamily:F,letterSpacing:1}}>{"\ud83d\udd11"} OPERATOR LOGIN</button>
+            </div>
+          )}
           {error && <div style={{marginTop:10,padding:10,background:"#1a0808",border:"1px solid " + C.red + "33",borderRadius:6,color:C.red,fontSize:10}}>{error}</div>}
           <div style={{textAlign:"center",marginTop:14,fontSize:9,color:C.dim}}>SIMULATED {"\u00b7"} REAL PRICES {"\u00b7"} NOT FINANCIAL ADVICE</div>
         </div>
@@ -622,14 +587,17 @@ export default function App() {
   /* ── MAIN DASHBOARD ── */
   return (
     <div>
-      {pinEl}
+      {opEl}
       <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:F,padding:"16px 16px 90px",maxWidth:900,margin:"0 auto"}}>
 
         {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:10}}>
           <div>
-            <div style={{fontSize:9,letterSpacing:4,color:C.gold,marginBottom:3}}>{"\u25c8"} TEO CAPITAL {"\u00b7"} 4-WEEK SPRINT {"\ud83d\udd10"}</div>
+            <div style={{fontSize:9,letterSpacing:4,color:C.gold,marginBottom:3}}>{"\u25c8"} TEO CAPITAL {"\u00b7"} 4-WEEK SPRINT</div>
             <div style={{fontSize:9,color:C.muted}}>{state.snapshots.length} decision{state.snapshots.length!==1?"s":""}{latest ? " \u00b7 " + latest.timestamp : ""}</div>
+            <div style={{fontSize:9,color:isOperator?C.green:C.muted,marginTop:4,cursor:"pointer"}} onClick={function(){ if(isOperator){ if(confirm("Log out of operator mode on this device?")) handleOpLogout(); } else { setShowOpLogin(true); } }}>
+              {isOperator ? "\u25cf OPERATOR \u00b7 click to log out" : "\u25cb viewer mode \u00b7 click to operate"}
+            </div>
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:28,fontWeight:800,fontFamily:FS,color:isUp?C.green:C.red,lineHeight:1}}>{fmt(state.totalValue)}</div>
@@ -841,20 +809,26 @@ export default function App() {
             {state.grade ? (
               <div>
                 <GradeCard grade={state.grade} />
-                <button onClick={function(){guard(doGrade);}} disabled={grading} style={{background:"transparent",color:C.muted,border:"1px solid " + C.border,padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:10,fontFamily:F,marginTop:12}}>
-                  {grading ? "Updating..." : "Re-grade"}
-                </button>
+                {isOperator && (
+                  <button onClick={doGrade} disabled={grading} style={{background:"transparent",color:C.muted,border:"1px solid " + C.border,padding:"9px 18px",borderRadius:6,cursor:"pointer",fontSize:10,fontFamily:F,marginTop:12}}>
+                    {grading ? "Updating..." : "Re-grade"}
+                  </button>
+                )}
               </div>
             ) : (
               <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:10,padding:28,textAlign:"center"}}>
                 <div style={{fontSize:28,marginBottom:12}}>{"\ud83d\udcca"}</div>
                 <div style={{fontSize:15,fontWeight:700,fontFamily:FS,color:C.text,marginBottom:8}}>Report Card</div>
                 <div style={{fontSize:11,color:C.muted,lineHeight:1.9,marginBottom:20}}>Teo reviews every decision against actual outcomes.</div>
-                <button onClick={function(){guard(doGrade);}} disabled={grading||!state.snapshots.length} style={{
-                  background:grading?"transparent":"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",color:grading?C.muted:"#0a0800",
-                  border:"1px solid " + (grading?C.border:"transparent"),padding:"12px 28px",borderRadius:8,
-                  cursor:grading||!state.snapshots.length?"not-allowed":"pointer",fontSize:13,fontWeight:700,fontFamily:FS,
-                }}>{"\u2605"} GRADE</button>
+                {isOperator ? (
+                  <button onClick={doGrade} disabled={grading||!state.snapshots.length} style={{
+                    background:grading?"transparent":"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",color:grading?C.muted:"#0a0800",
+                    border:"1px solid " + (grading?C.border:"transparent"),padding:"12px 28px",borderRadius:8,
+                    cursor:grading||!state.snapshots.length?"not-allowed":"pointer",fontSize:13,fontWeight:700,fontFamily:FS,
+                  }}>{"\u2605"} GRADE</button>
+                ) : (
+                  <div style={{fontSize:10,color:C.dim,fontStyle:"italic"}}>No grade yet — only the operator can run a grade pass.</div>
+                )}
               </div>
             )}
           </div>
@@ -862,20 +836,22 @@ export default function App() {
 
         {error && <div style={{marginTop:12,padding:"10px 14px",background:"#150808",border:"1px solid " + C.red + "33",borderRadius:8,color:C.red,fontSize:11}}>{"\u26a0"} {error}</div>}
 
-        {/* Bottom bar */}
-        <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#07070fee",borderTop:"1px solid " + C.border,padding:"12px 20px",display:"flex",gap:8,alignItems:"center",justifyContent:"center",flexWrap:"wrap",zIndex:100}}>
-          <button onClick={function(){guard(doDecision);}} disabled={busy} style={{
-            background:busy?"transparent":"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",
-            color:busy?C.muted:"#0a0800",border:"1px solid " + (busy?C.border:"transparent"),
-            padding:"12px 28px",borderRadius:8,cursor:busy?"not-allowed":"pointer",
-            fontSize:13,fontWeight:700,fontFamily:FS,letterSpacing:1,minWidth:240,
-          }}>{busy ? "Checking..." : isFirst ? "\ud83d\udd10 DEPLOY $5,000" : "\ud83d\udd10 CHECK & DECIDE"}</button>
-          <button onClick={function(){guard(doGrade);}} disabled={grading||!state.snapshots.length} style={{
-            background:"transparent",color:grading?C.muted:C.gold,border:"1px solid " + C.gold + "44",
-            padding:"12px 16px",borderRadius:8,cursor:grading||!state.snapshots.length?"not-allowed":"pointer",fontSize:11,fontFamily:F,
-          }}>{"\u2605"} GRADE</button>
-          <button onClick={function(){guard(doReset);}} style={{background:"transparent",color:C.dim,border:"1px solid " + C.dim,padding:"12px 10px",borderRadius:8,cursor:"pointer",fontSize:9,fontFamily:F}}>{"\ud83d\udd10"} RESET</button>
-        </div>
+        {/* Bottom bar — operator only */}
+        {isOperator ? (
+          <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#07070fee",borderTop:"1px solid " + C.border,padding:"12px 20px",display:"flex",gap:8,alignItems:"center",justifyContent:"center",flexWrap:"wrap",zIndex:100}}>
+            <button onClick={doDecision} disabled={busy} style={{
+              background:busy?"transparent":"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",
+              color:busy?C.muted:"#0a0800",border:"1px solid " + (busy?C.border:"transparent"),
+              padding:"12px 28px",borderRadius:8,cursor:busy?"not-allowed":"pointer",
+              fontSize:13,fontWeight:700,fontFamily:FS,letterSpacing:1,minWidth:240,
+            }}>{busy ? "Checking..." : isFirst ? "DEPLOY $5,000" : "CHECK & DECIDE"}</button>
+            <button onClick={doGrade} disabled={grading||!state.snapshots.length} style={{
+              background:"transparent",color:grading?C.muted:C.gold,border:"1px solid " + C.gold + "44",
+              padding:"12px 16px",borderRadius:8,cursor:grading||!state.snapshots.length?"not-allowed":"pointer",fontSize:11,fontFamily:F,
+            }}>{"\u2605"} GRADE</button>
+            <button onClick={function(){ if(confirm("Wipe all portfolio state? This cannot be undone.")) doReset(); }} style={{background:"transparent",color:C.dim,border:"1px solid " + C.dim,padding:"12px 10px",borderRadius:8,cursor:"pointer",fontSize:9,fontFamily:F}}>RESET</button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
