@@ -165,8 +165,18 @@ function parseJSON(raw) {
 }
 
 
-async function makeDecision(holdings, cash, snapNum, priorStops, operatorCode) {
-  const isFirst = holdings.length === 0 && cash >= SEED;
+async function makeDecision(holdings, cash, snapNum, priorStops, operatorCode, config) {
+  const seedAmt = (config && config.seed) || SEED;
+  const weeks   = (config && config.weeks) || 4;
+  const riskDir = (config && RISK_PRESETS[config.risk]) || RISK_PRESETS.Aggressive;
+  const focusDirectives = (config && Array.isArray(config.focusIds) ? config.focusIds : [])
+    .map(id => (FOCUS_CHIPS.find(c => c.id === id) || {}).directive)
+    .filter(Boolean);
+  const focusBlock = focusDirectives.length
+    ? "\n\nSTRATEGY DIRECTIVES (operator-specified, all must be honored):\n- " + focusDirectives.join("\n- ")
+    : "";
+
+  const isFirst = holdings.length === 0 && cash >= seedAmt - 0.01;
   const now = new Date().toLocaleString("en-US", {
     weekday:"short", month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit"
   });
@@ -175,7 +185,7 @@ async function makeDecision(holdings, cash, snapNum, priorStops, operatorCode) {
     ? "Starting capital: $" + cash.toFixed(2) + " cash. No positions."
     : holdings.map(h => h.ticker + ": " + h.shares + "sh @ $" + h.boughtAt.toFixed(2) + " last $" + h.lastPrice.toFixed(2)).join("\n") + "\nCash: $" + cash.toFixed(2);
 
-  const system = "You are an elite AI portfolio manager. MAXIMIZE $5000 over 4 weeks. HIGH risk tolerance. Max 6 positions. Schwab-compatible (stocks, ETFs, standard options).\n\nFRAMEWORK:\n- Assess if news is ALREADY PRICED IN or a GENUINE SURPRISE before acting\n- Size by conviction: HIGH=25-35%, MEDIUM=15-20%, SPECULATIVE=5-8%\n- Diversify by THEME not just ticker count\n- Check earnings calendar for held names (5 day lookahead)\n- Set stops 7-10% below entry, profit targets +12-25%\n- Trail stops on winners. Hold cash when uncertain.\n- If prior stop was crossed, treat as triggered.\n\nSearch real prices via web search. Read today's news.\n\nRESPOND WITH ONLY THIS JSON (no other text):\n{\"fetched_prices\":{\"TICKER\":123.45},\"macro\":\"market conditions sentence\",\"priced_in\":[\"things baked in\"],\"opportunities\":[\"genuine edges\"],\"earnings_nearby\":[{\"ticker\":\"X\",\"date\":\"May 5\",\"action\":\"HOLD\",\"why\":\"reason\"}],\"themes\":[{\"name\":\"AI\",\"tickers\":[\"NVDA\"],\"pct\":30}],\"triggered_stops\":[],\"transactions\":[{\"action\":\"BUY\",\"ticker\":\"X\",\"name\":\"Name\",\"instrument\":\"STOCK\",\"shares\":10,\"price\":100,\"strike\":null,\"expiry\":null,\"total_cost\":1000,\"size_pct\":20,\"conviction\":\"HIGH\",\"rr\":\"3:1\",\"edge\":\"not priced in yet\",\"reason\":\"one sentence\"}],\"holdings_after\":[{\"ticker\":\"X\",\"name\":\"Name\",\"instrument\":\"STOCK\",\"shares\":10,\"boughtAt\":100,\"lastPrice\":100,\"strike\":null,\"expiry\":null,\"theme\":\"AI\"}],\"stop_limits\":[{\"ticker\":\"X\",\"order\":\"STOP_LOSS\",\"shares\":10,\"stop_price\":90,\"limit_price\":89,\"notes\":\"protect\"}],\"cash_after\":0,\"cash_reserved\":0,\"reserve_reason\":\"\",\"thesis\":\"3 sentences\",\"watching\":[\"SPY\"]}\n\nCRITICAL: valid JSON only. holdings_after=ALL positions. fetched_prices=every held ticker.";
+  const system = "You are an elite AI portfolio manager. MAXIMIZE $" + seedAmt + " over " + weeks + " weeks. " + riskDir + " Max 6 positions. Schwab-compatible (stocks, ETFs, standard options).\n\nFRAMEWORK:\n- Assess if news is ALREADY PRICED IN or a GENUINE SURPRISE before acting\n- Size by conviction: HIGH=25-35%, MEDIUM=15-20%, SPECULATIVE=5-8% (adjust per the risk tolerance above)\n- Diversify by THEME not just ticker count\n- Check earnings calendar for held names (5 day lookahead)\n- Set stops 7-10% below entry, profit targets +12-25%\n- Trail stops on winners. Hold cash when uncertain.\n- If prior stop was crossed, treat as triggered." + focusBlock + "\n\nSearch real prices via web search. Read today's news.\n\nRESPOND WITH ONLY THIS JSON (no other text):\n{\"fetched_prices\":{\"TICKER\":123.45},\"macro\":\"market conditions sentence\",\"priced_in\":[\"things baked in\"],\"opportunities\":[\"genuine edges\"],\"earnings_nearby\":[{\"ticker\":\"X\",\"date\":\"May 5\",\"action\":\"HOLD\",\"why\":\"reason\"}],\"themes\":[{\"name\":\"AI\",\"tickers\":[\"NVDA\"],\"pct\":30}],\"triggered_stops\":[],\"transactions\":[{\"action\":\"BUY\",\"ticker\":\"X\",\"name\":\"Name\",\"instrument\":\"STOCK\",\"shares\":10,\"price\":100,\"strike\":null,\"expiry\":null,\"total_cost\":1000,\"size_pct\":20,\"conviction\":\"HIGH\",\"rr\":\"3:1\",\"edge\":\"not priced in yet\",\"reason\":\"one sentence\"}],\"holdings_after\":[{\"ticker\":\"X\",\"name\":\"Name\",\"instrument\":\"STOCK\",\"shares\":10,\"boughtAt\":100,\"lastPrice\":100,\"strike\":null,\"expiry\":null,\"theme\":\"AI\"}],\"stop_limits\":[{\"ticker\":\"X\",\"order\":\"STOP_LOSS\",\"shares\":10,\"stop_price\":90,\"limit_price\":89,\"notes\":\"protect\"}],\"cash_after\":0,\"cash_reserved\":0,\"reserve_reason\":\"\",\"thesis\":\"3 sentences\",\"watching\":[\"SPY\"]}\n\nCRITICAL: valid JSON only. holdings_after=ALL positions. fetched_prices=every held ticker.";
 
   const stopList = (priorStops || []).length
     ? priorStops.map(s => s.order + " " + s.ticker + ": stop $" + s.stop_price + " / limit $" + s.limit_price).join("\n")
@@ -219,25 +229,29 @@ async function makeDecision(holdings, cash, snapNum, priorStops, operatorCode) {
 }
 
 async function runGrade(state, operatorCode) {
+  const cfg = state.config || DEFAULT_CONFIG;
+  const seedAmt = cfg.seed;
+  const weeks = cfg.weeks;
   const hist = (state.snapshots || []).map((s, i) =>
     "#" + (i+1) + " (" + s.timestamp + "): $" + s.totalValue.toFixed(2) + " | " +
     (s.transactions.length ? s.transactions.map(t => t.action + " " + t.ticker).join(", ") : "hold") +
     " | " + s.thesis
   ).join("\n");
-  const system = "Grade this 4-week trading record. Be brutally honest. Respond ONLY with JSON: {\"grade\":\"A-F\",\"score\":0-100,\"headline\":\"verdict\",\"what_worked\":[\"...\"],\"what_failed\":[\"...\"],\"missed_opportunities\":[\"...\"],\"would_do_differently\":[\"...\"],\"benchmark\":\"vs SPY\",\"lesson\":\"takeaway\"}";
-  const user = "Started $5000. Now $" + state.totalValue.toFixed(2) + " (" + ((state.totalValue/SEED-1)*100).toFixed(2) + "%). " + (state.snapshots||[]).length + " decisions.\n\n" + hist + "\n\nSearch market context. Grade honestly.";
+  const system = "Grade this " + weeks + "-week trading record. Be brutally honest. Respond ONLY with JSON: {\"grade\":\"A-F\",\"score\":0-100,\"headline\":\"verdict\",\"what_worked\":[\"...\"],\"what_failed\":[\"...\"],\"missed_opportunities\":[\"...\"],\"would_do_differently\":[\"...\"],\"benchmark\":\"vs SPY\",\"lesson\":\"takeaway\"}";
+  const user = "Started $" + seedAmt + ". Now $" + state.totalValue.toFixed(2) + " (" + ((state.totalValue/seedAmt-1)*100).toFixed(2) + "%). " + (state.snapshots||[]).length + " decisions over " + weeks + "-week target.\n\n" + hist + "\n\nSearch market context. Grade honestly.";
   return parseJSON(await callTeo(system, user, GRADE_SCHEMA, operatorCode));
 }
 
 
-const ChartTip = ({ active, payload }) => {
+const ChartTip = ({ active, payload, seed }) => {
   if (!active || !payload || !payload.length) return null;
   const v = payload[0].value;
+  const baseline = seed || SEED;
   return (
     <div style={{background:"#0c0c1c",border:"1px solid " + C.border,padding:"8px 12px",borderRadius:6,fontFamily:F,fontSize:11}}>
       <div style={{color:C.muted,marginBottom:3}}>{payload[0].payload.label}</div>
-      <div style={{color:v>=SEED?C.green:C.red,fontSize:15,fontWeight:700}}>{fmt(v)}</div>
-      <div style={{color:C.muted,fontSize:10}}>{((v/SEED-1)*100).toFixed(2)}% vs $5K</div>
+      <div style={{color:v>=baseline?C.green:C.red,fontSize:15,fontWeight:700}}>{fmt(v)}</div>
+      <div style={{color:C.muted,fontSize:10}}>{((v/baseline-1)*100).toFixed(2)}% vs ${baseline.toLocaleString()}</div>
     </div>
   );
 };
@@ -392,7 +406,120 @@ function OperatorLogin({ onSubmit, onCancel }) {
 }
 
 
-const BLANK = {holdings:[],cash:SEED,totalValue:SEED,snapshots:[],history:[{label:"Start",value:SEED}],grade:null};
+// Sprint configuration presets. Each maps a UI choice to a directive that gets
+// woven into the model's system prompt.
+const RISK_PRESETS = {
+  Aggressive:    "HIGH risk tolerance. Position sizes can stretch to 35-40% on highest convictions. Smaller cash buffer OK. Take asymmetric bets when edge is real.",
+  Moderate:      "MODERATE risk tolerance. Position sizes 15-30%. Standard diversification. Keep at least 5-10% cash reserve.",
+  Conservative:  "CONSERVATIVE risk tolerance. Position sizes 10-20%. Keep 15-25% cash reserve. Prefer ETFs and large-caps over single-stock concentration.",
+};
+
+const FOCUS_CHIPS = [
+  { id: "dividend",     label: "Dividend income", directive: "Prioritize dividend-paying stocks where conviction is otherwise equal; pay attention to ex-dividend dates." },
+  { id: "options",      label: "Options active",  directive: "Use standard options strategies (calls, puts, vertical spreads) when conviction and risk-reward warrant; do not exceed 20% of capital in options at once." },
+  { id: "tech",         label: "Tech focus",      directive: "Tilt the universe toward technology stocks and tech-heavy ETFs." },
+  { id: "etf",          label: "ETFs only",       directive: "Limit positions to ETFs only — no individual stocks." },
+  { id: "smallcap",     label: "Small-cap tilt",  directive: "Bias toward small-cap and micro-cap opportunities; accept higher volatility for higher upside." },
+  { id: "international",label: "International",   directive: "Include international exposure via ADRs and country/region ETFs alongside US names." },
+];
+
+const DEFAULT_CONFIG = {
+  sprintName: "4-Week Sprint",
+  seed: 5000,
+  weeks: 4,
+  risk: "Aggressive",
+  focusIds: [],
+};
+
+const BLANK = {config:null,holdings:[],cash:0,totalValue:0,snapshots:[],history:[],grade:null};
+
+function ConfigForm({ initial, onDeploy }) {
+  const [name, setName] = useState((initial && initial.sprintName) || DEFAULT_CONFIG.sprintName);
+  const [seed, setSeed] = useState((initial && initial.seed) || DEFAULT_CONFIG.seed);
+  const [weeks, setWeeks] = useState((initial && initial.weeks) || DEFAULT_CONFIG.weeks);
+  const [risk, setRisk] = useState((initial && initial.risk) || DEFAULT_CONFIG.risk);
+  const [focusIds, setFocusIds] = useState((initial && initial.focusIds) || []);
+  const [err, setErr] = useState("");
+
+  const toggleChip = function(id) {
+    setFocusIds(function(prev) {
+      return prev.indexOf(id) >= 0 ? prev.filter(x => x !== id) : prev.concat([id]);
+    });
+  };
+
+  const submit = function() {
+    if (!name.trim()) { setErr("Sprint needs a name"); return; }
+    const sd = Number(seed), wk = Number(weeks);
+    if (!Number.isFinite(sd) || sd < 100) { setErr("Seed must be at least $100"); return; }
+    if (!Number.isFinite(wk) || wk < 1 || wk > 52) { setErr("Duration must be 1-52 weeks"); return; }
+    onDeploy({ sprintName: name.trim(), seed: sd, weeks: wk, risk: risk, focusIds: focusIds });
+  };
+
+  const lbl = {fontSize:10,letterSpacing:2,color:C.muted,marginBottom:6,textTransform:"uppercase"};
+  const inp = {background:C.bg3,border:"1px solid " + C.border,color:C.text,padding:"10px 12px",borderRadius:6,fontSize:13,width:"100%",fontFamily:F};
+
+  return (
+    <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:12,padding:"20px 22px",marginBottom:18,fontFamily:F}}>
+      <div style={{fontSize:11,letterSpacing:3,color:C.gold,marginBottom:14,textAlign:"center"}}>{"\u25c8"} SPRINT CONFIG {"\u25c8"}</div>
+
+      <div style={{marginBottom:14}}>
+        <div style={lbl}>Sprint name</div>
+        <input value={name} onChange={function(e){setName(e.target.value);}} style={inp} placeholder="e.g. May Aggressive Test" />
+      </div>
+
+      <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+        <div style={{flex:"1 1 140px"}}>
+          <div style={lbl}>Starting capital ($)</div>
+          <input type="number" value={seed} onChange={function(e){setSeed(e.target.value);}} style={inp} />
+        </div>
+        <div style={{flex:"1 1 100px"}}>
+          <div style={lbl}>Duration (weeks)</div>
+          <input type="number" min="1" max="52" value={weeks} onChange={function(e){setWeeks(e.target.value);}} style={inp} />
+        </div>
+      </div>
+
+      <div style={{marginBottom:14}}>
+        <div style={lbl}>Risk tolerance</div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {Object.keys(RISK_PRESETS).map(function(r){
+            const active = r === risk;
+            return (
+              <button key={r} onClick={function(){setRisk(r);}} style={{
+                flex:"1 1 90px",background:active?"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")":"transparent",
+                color:active?"#0a0800":C.text,border:"1px solid " + (active?"transparent":C.border),
+                padding:"9px 10px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:F,fontWeight:active?700:400,letterSpacing:.5,
+              }}>{r}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{marginBottom:14}}>
+        <div style={lbl}>Focus chips (multi-select, optional)</div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {FOCUS_CHIPS.map(function(c){
+            const active = focusIds.indexOf(c.id) >= 0;
+            return (
+              <button key={c.id} onClick={function(){toggleChip(c.id);}} style={{
+                background:active?C.gold + "22":"transparent",
+                color:active?C.gold:C.muted,border:"1px solid " + (active?C.gold + "66":C.border),
+                padding:"7px 12px",borderRadius:14,cursor:"pointer",fontSize:11,fontFamily:F,
+              }}>{active?"\u2713 ":""}{c.label}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      {err && <div style={{color:C.red,fontSize:11,marginBottom:10,textAlign:"center"}}>{err}</div>}
+
+      <button onClick={submit} style={{
+        width:"100%",background:"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",color:"#0a0800",
+        border:"none",padding:14,borderRadius:10,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:FS,letterSpacing:1.5,
+      }}>{"\u25b6"}  DEPLOY ${Number(seed).toLocaleString()}</button>
+    </div>
+  );
+}
+
 
 export default function App() {
   const [state, setState] = useState(null);
@@ -404,6 +531,10 @@ export default function App() {
   const [error, setError] = useState(null);
   const [operatorCode, setOperatorCode] = useState(null);
   const [showOpLogin, setShowOpLogin] = useState(false);
+  const [livePrices, setLivePrices] = useState({});
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [, refreshTick] = useState(0); // forces re-render so "X seconds ago" updates
 
   // On mount: fetch shared state from server, and try to restore operator code from this device.
   useEffect(function() {
@@ -457,15 +588,72 @@ export default function App() {
 
   const isOperator = !!operatorCode;
 
-  const doDecision = async function() {
-    if (busy) return; setBusy(true); setError(null);
+  // Fetch live prices for current holdings. Free, no Anthropic, no tokens.
+  const refreshPrices = async function() {
+    if (!state || !state.holdings || !state.holdings.length) return;
+    if (refreshing) return;
+    setRefreshing(true);
     try {
-      const priorStops = state.snapshots && state.snapshots.length ? state.snapshots[state.snapshots.length-1].stopLimits || [] : [];
-      const res = await makeDecision(state.holdings, state.cash, state.snapshots.length, priorStops, operatorCode);
+      const tickers = state.holdings.map(h => h.ticker).filter(Boolean).join(",");
+      if (!tickers) { setRefreshing(false); return; }
+      const r = await fetch("/api/prices?tickers=" + encodeURIComponent(tickers));
+      if (r.ok) {
+        const body = await r.json();
+        if (body && body.prices) {
+          setLivePrices(prev => Object.assign({}, prev, body.prices));
+          setLastRefresh(new Date());
+        }
+      }
+    } catch(e) { /* silent — price refresh shouldn't show errors */ }
+    setRefreshing(false);
+  };
+
+  // Auto-refresh prices every 60s while there are holdings and the tab is visible.
+  useEffect(function() {
+    const have = state && state.holdings && state.holdings.length;
+    if (!have) return;
+    refreshPrices();
+    const id = setInterval(function() {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refreshPrices();
+      }
+    }, 60000);
+    return function() { clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state && state.holdings && state.holdings.map(h => h.ticker).join(",")]);
+
+  // Tick every 15s so the "Xs ago" label stays fresh between refreshes.
+  useEffect(function() {
+    const id = setInterval(function() { refreshTick(x => x + 1); }, 15000);
+    return function() { clearInterval(id); };
+  }, []);
+
+  // For the first deploy, doDecision is called with a config object — that config
+  // is what was just selected on the ConfigForm. For subsequent CHECK & DECIDE calls,
+  // config is omitted and we use whatever was baked into state on the first deploy.
+  const doDecision = async function(deployConfig) {
+    if (busy) return; setBusy(true); setError(null);
+
+    // Resolve effective starting state (either current state, or a freshly-seeded one
+    // if this is the first deploy with a new config).
+    let baseState = state;
+    if (deployConfig) {
+      baseState = Object.assign({}, BLANK, {
+        config: deployConfig,
+        cash: deployConfig.seed,
+        totalValue: deployConfig.seed,
+        history: [{ label: "Start", value: deployConfig.seed }],
+      });
+    }
+    const effectiveConfig = (baseState && baseState.config) || deployConfig || DEFAULT_CONFIG;
+
+    try {
+      const priorStops = baseState.snapshots && baseState.snapshots.length ? baseState.snapshots[baseState.snapshots.length-1].stopLimits || [] : [];
+      const res = await makeDecision(baseState.holdings, baseState.cash, baseState.snapshots.length, priorStops, operatorCode, effectiveConfig);
       var d = res.data;
       var macro = d.macro || "";
       var snap = {
-        index: state.snapshots.length,
+        index: baseState.snapshots.length,
         timestamp: new Date().toLocaleString(),
         macro: macro,
         pricedIn: d.priced_in || [],
@@ -483,14 +671,14 @@ export default function App() {
         holdingsAfter: d.holdings_after || [],
         cashAfter: d.cash_after || 0,
         totalValue: res.totalValue,
-        prevValue: state.totalValue,
+        prevValue: baseState.totalValue,
       };
-      var next = Object.assign({}, state, {
+      var next = Object.assign({}, baseState, {
         holdings: d.holdings_after || [],
         cash: d.cash_after || 0,
         totalValue: res.totalValue,
-        snapshots: state.snapshots.concat([snap]),
-        history: state.history.concat([{
+        snapshots: baseState.snapshots.concat([snap]),
+        history: baseState.history.concat([{
           label: new Date().toLocaleDateString("en-US",{month:"short",day:"numeric"}),
           value: res.totalValue,
         }]),
@@ -522,13 +710,37 @@ export default function App() {
     </div>
   );
 
-  var totalReturn = ((state.totalValue / SEED - 1) * 100);
-  var isUp = totalReturn >= 0;
-  var isFirst = !state.snapshots.length;
+  var cfg = state.config || DEFAULT_CONFIG;
+  var seedAmt = cfg.seed;
+  var sprintName = cfg.sprintName || (cfg.weeks + "-Week Sprint");
   var latest = state.snapshots.length ? state.snapshots[state.snapshots.length-1] : null;
   var viewSnap = state.snapshots[snapIdx] || null;
   var latestPrices = latest ? (latest.fetchedPrices || {}) : {};
+
+  // Effective price for a holding: live > last decision > stored last > entry.
+  var effectivePrice = function(h) {
+    return livePrices[h.ticker] != null ? livePrices[h.ticker]
+      : latestPrices[h.ticker] != null ? latestPrices[h.ticker]
+      : h.lastPrice != null ? h.lastPrice
+      : h.boughtAt;
+  };
+
+  // Live portfolio total = sum(shares × effective price) + cash. Falls back to stored.
+  var haveAnyLive = state.holdings.some(function(h){ return livePrices[h.ticker] != null; });
+  var liveTotal = haveAnyLive
+    ? (state.holdings.reduce(function(s, h){ return s + h.shares * effectivePrice(h); }, 0) + state.cash)
+    : state.totalValue;
+  var totalReturn = ((liveTotal / seedAmt - 1) * 100);
+  var isUp = totalReturn >= 0;
+  var isFirst = !state.snapshots.length;
   var opEl = showOpLogin ? <OperatorLogin onSubmit={handleOpSubmit} onCancel={function(){setShowOpLogin(false);}} /> : null;
+
+  // "Last refreshed Xs ago" helper.
+  var refreshLabel = "";
+  if (lastRefresh) {
+    var secs = Math.max(0, Math.floor((Date.now() - lastRefresh.getTime()) / 1000));
+    refreshLabel = secs < 60 ? (secs + "s ago") : (Math.floor(secs/60) + "m ago");
+  }
 
   /* ── SPLASH ── */
   if (isFirst && !busy) return (
@@ -538,32 +750,31 @@ export default function App() {
         <div style={{maxWidth:480,width:"100%"}} className="fu">
           <div style={{textAlign:"center",marginBottom:32}}>
             <div style={{fontSize:10,letterSpacing:5,color:C.gold,marginBottom:10}}>{"\u25c8"} TEO CAPITAL {"\u25c8"}</div>
-            <div style={{fontSize:34,fontWeight:800,fontFamily:FS,color:C.text,lineHeight:1.1,marginBottom:10}}>4-Week Sprint</div>
-            <div style={{fontSize:24,fontWeight:800,fontFamily:FS,background:"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>$5,000</div>
+            <div style={{fontSize:34,fontWeight:800,fontFamily:FS,color:C.text,lineHeight:1.1,marginBottom:10}}>New Sprint</div>
             <div style={{fontSize:12,color:C.textdim,lineHeight:1.9,marginTop:8}}>Elite AI trader. Real prices. Risk-managed framework.</div>
           </div>
-          <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:12,padding:"18px 20px",marginBottom:22}}>
-            {[
-              "Position sizing by conviction & risk-reward",
-              "Correlation-aware diversification",
-              "Earnings calendar awareness",
-              "Priced-in vs genuine opportunity analysis",
-              "Stop-limit orders on every position",
-              "Cash reserves when uncertain",
-            ].map(function(t, i) {
-              return <div key={i} style={{display:"flex",gap:10,marginBottom:i<5?8:0,alignItems:"flex-start"}}>
-                <span style={{color:C.gold,fontSize:10,flexShrink:0}}>{"\u25c8"}</span>
-                <span style={{fontSize:11,color:C.text,lineHeight:1.6}}>{t}</span>
-              </div>;
-            })}
-          </div>
+          {!isOperator && (
+            <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:12,padding:"18px 20px",marginBottom:22}}>
+              {[
+                "Position sizing by conviction & risk-reward",
+                "Correlation-aware diversification",
+                "Earnings calendar awareness",
+                "Priced-in vs genuine opportunity analysis",
+                "Stop-limit orders on every position",
+                "Cash reserves when uncertain",
+              ].map(function(t, i) {
+                return <div key={i} style={{display:"flex",gap:10,marginBottom:i<5?8:0,alignItems:"flex-start"}}>
+                  <span style={{color:C.gold,fontSize:10,flexShrink:0}}>{"\u25c8"}</span>
+                  <span style={{fontSize:11,color:C.text,lineHeight:1.6}}>{t}</span>
+                </div>;
+              })}
+            </div>
+          )}
           {isOperator ? (
-            <button onClick={doDecision} disabled={busy} style={{width:"100%",background:"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",color:"#0a0800",border:"none",padding:15,borderRadius:10,cursor:"pointer",fontSize:14,fontWeight:700,fontFamily:FS,letterSpacing:1}}>
-              {"\u25b6"}  DEPLOY $5,000 NOW
-            </button>
+            <ConfigForm onDeploy={function(cfg){ doDecision(cfg); }} />
           ) : (
             <div style={{background:C.bg2,border:"1px dashed " + C.border,borderRadius:10,padding:"18px 20px",textAlign:"center"}}>
-              <div style={{fontSize:11,color:C.textdim,lineHeight:1.8,marginBottom:14}}>Teo hasn't deployed capital yet. Only the operator can start the sprint.</div>
+              <div style={{fontSize:11,color:C.textdim,lineHeight:1.8,marginBottom:14}}>Teo hasn't deployed capital yet. Only the operator can start a sprint.</div>
               <button onClick={function(){setShowOpLogin(true);}} style={{background:"transparent",color:C.gold,border:"1px solid " + C.gold + "55",padding:"10px 20px",borderRadius:8,cursor:"pointer",fontSize:11,fontFamily:F,letterSpacing:1}}>{"\ud83d\udd11"} OPERATOR LOGIN</button>
             </div>
           )}
@@ -578,7 +789,7 @@ export default function App() {
   if (busy) return (
     <div style={{background:C.bg,minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:F,gap:18}}>
       <div style={{fontSize:36}}>{"\u26a1"}</div>
-      <div style={{fontSize:14,fontWeight:700,fontFamily:FS,color:C.text}}>{isFirst ? "Deploying $5,000..." : "Checking markets..."}</div>
+      <div style={{fontSize:14,fontWeight:700,fontFamily:FS,color:C.text}}>{isFirst ? "Deploying capital..." : "Checking markets..."}</div>
       <div style={{fontSize:11,color:C.textdim,textAlign:"center",lineHeight:1.9}}>Searching prices {"\u00b7"} Reading news {"\u00b7"} Analyzing correlations</div>
       <div style={{display:"flex",gap:6}}>{[0,1,2].map(function(i){return <div key={i} style={{width:8,height:8,borderRadius:"50%",background:C.gold,animation:"pulse 1.5s ease " + (i*0.3) + "s infinite"}} />;})}</div>
     </div>
@@ -593,15 +804,23 @@ export default function App() {
         {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:10}}>
           <div>
-            <div style={{fontSize:9,letterSpacing:4,color:C.gold,marginBottom:3}}>{"\u25c8"} TEO CAPITAL {"\u00b7"} 4-WEEK SPRINT</div>
-            <div style={{fontSize:9,color:C.muted}}>{state.snapshots.length} decision{state.snapshots.length!==1?"s":""}{latest ? " \u00b7 " + latest.timestamp : ""}</div>
+            <div style={{fontSize:9,letterSpacing:4,color:C.gold,marginBottom:3}}>{"\u25c8"} TEO CAPITAL {"\u00b7"} {sprintName.toUpperCase()}</div>
+            <div style={{fontSize:9,color:C.muted}}>{state.snapshots.length} decision{state.snapshots.length!==1?"s":""} {"\u00b7"} {cfg.weeks}-week target {latest ? " \u00b7 last decided " + latest.timestamp : ""}</div>
             <div style={{fontSize:9,color:isOperator?C.green:C.muted,marginTop:4,cursor:"pointer"}} onClick={function(){ if(isOperator){ if(confirm("Log out of operator mode on this device?")) handleOpLogout(); } else { setShowOpLogin(true); } }}>
               {isOperator ? "\u25cf OPERATOR \u00b7 click to log out" : "\u25cb viewer mode \u00b7 click to operate"}
             </div>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{fontSize:28,fontWeight:800,fontFamily:FS,color:isUp?C.green:C.red,lineHeight:1}}>{fmt(state.totalValue)}</div>
-            <div style={{fontSize:12,color:isUp?"#00bb66":"#cc3333",marginTop:2}}>{fmtp(totalReturn)} on $5,000</div>
+            <div style={{fontSize:28,fontWeight:800,fontFamily:FS,color:isUp?C.green:C.red,lineHeight:1}}>{fmt(liveTotal)}</div>
+            <div style={{fontSize:12,color:isUp?"#00bb66":"#cc3333",marginTop:2}}>{fmtp(totalReturn)} on ${seedAmt.toLocaleString()}</div>
+            {state.holdings.length > 0 && (
+              <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"flex-end",marginTop:6}}>
+                <button onClick={refreshPrices} disabled={refreshing} style={{background:"transparent",color:refreshing?C.muted:C.gold,border:"1px solid " + C.gold + "44",padding:"5px 10px",borderRadius:6,cursor:refreshing?"not-allowed":"pointer",fontSize:9,fontFamily:F,letterSpacing:1}}>
+                  {refreshing ? "\u21bb refreshing..." : "\u21bb refresh prices"}
+                </button>
+                {refreshLabel && <span style={{fontSize:9,color:C.dim}}>{refreshLabel}</span>}
+              </div>
+            )}
           </div>
         </div>
 
@@ -612,8 +831,8 @@ export default function App() {
               <LineChart data={state.history}>
                 <XAxis dataKey="label" tick={{fill:C.muted,fontSize:9}} axisLine={false} tickLine={false} />
                 <YAxis domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} axisLine={false} tickLine={false} width={62} tickFormatter={function(v){return "$"+v;}} />
-                <Tooltip content={<ChartTip />} />
-                <ReferenceLine y={SEED} stroke={C.dim} strokeDasharray="3 3" />
+                <Tooltip content={function(props){ return <ChartTip {...props} seed={seedAmt} />; }} />
+                <ReferenceLine y={seedAmt} stroke={C.dim} strokeDasharray="3 3" />
                 <Line type="monotone" dataKey="value" stroke={isUp?C.green:C.red} strokeWidth={2.5} dot={{r:3,fill:isUp?C.green:C.red}} />
               </LineChart>
             </ResponsiveContainer>
@@ -666,7 +885,7 @@ export default function App() {
           <div className="fu">
             {latest.prevValue && (
               <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap"}}>
-                {[["SINCE LAST", latest.totalValue, latest.prevValue||SEED], ["TOTAL", latest.totalValue, SEED]].map(function(arr) {
+                {[["SINCE LAST", latest.totalValue, latest.prevValue||seedAmt], ["TOTAL", latest.totalValue, seedAmt]].map(function(arr) {
                   var label=arr[0], val=arr[1], base=arr[2];
                   var pct = ((val/base-1)*100).toFixed(2);
                   var up = val >= base;
@@ -775,7 +994,7 @@ export default function App() {
           <div className="fu">
             <div style={{fontSize:9,letterSpacing:3,color:C.muted,marginBottom:10}}>HOLDINGS ({state.holdings.length}/6)</div>
             {!state.holdings.length && <div style={{color:C.muted,fontSize:11,padding:"12px 0"}}>No positions.</div>}
-            {state.holdings.map(function(h,i){return <HoldingRow key={i} h={h} price={latestPrices[h.ticker]} />;})}
+            {state.holdings.map(function(h,i){return <HoldingRow key={i} h={h} price={effectivePrice(h)} />;})}
             {state.cash > 0.01 && <div style={{display:"flex",justifyContent:"space-between",padding:"10px 12px",background:C.bg3,borderRadius:6,borderLeft:"2px solid " + C.dim}}>
               <span style={{color:C.muted,fontSize:12}}>CASH</span><span style={{color:C.text,fontSize:13,fontWeight:600}}>{fmt(state.cash)}</span>
             </div>}
@@ -794,7 +1013,7 @@ export default function App() {
               <div>
                 <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:10,padding:14,marginBottom:12}}>
                   <div style={{fontSize:9,color:C.muted,marginBottom:4}}>#{viewSnap.index+1} {"\u00b7"} {viewSnap.timestamp}</div>
-                  <div style={{fontSize:16,fontWeight:700,fontFamily:FS,marginBottom:8,color:viewSnap.totalValue>=(viewSnap.prevValue||SEED)?C.green:C.red}}>{fmt(viewSnap.totalValue)}</div>
+                  <div style={{fontSize:16,fontWeight:700,fontFamily:FS,marginBottom:8,color:viewSnap.totalValue>=(viewSnap.prevValue||seedAmt)?C.green:C.red}}>{fmt(viewSnap.totalValue)}</div>
                   <div style={{fontSize:11,color:C.text,lineHeight:1.8}}>{viewSnap.thesis}</div>
                 </div>
                 {viewSnap.transactions && viewSnap.transactions.length > 0 && viewSnap.transactions.map(function(tx,i){return <TxRow key={i} tx={tx} />;})}
@@ -844,7 +1063,7 @@ export default function App() {
               color:busy?C.muted:"#0a0800",border:"1px solid " + (busy?C.border:"transparent"),
               padding:"12px 28px",borderRadius:8,cursor:busy?"not-allowed":"pointer",
               fontSize:13,fontWeight:700,fontFamily:FS,letterSpacing:1,minWidth:240,
-            }}>{busy ? "Checking..." : isFirst ? "DEPLOY $5,000" : "CHECK & DECIDE"}</button>
+            }}>{busy ? "Checking..." : isFirst ? ("DEPLOY $" + seedAmt.toLocaleString()) : "CHECK & DECIDE"}</button>
             <button onClick={doGrade} disabled={grading||!state.snapshots.length} style={{
               background:"transparent",color:grading?C.muted:C.gold,border:"1px solid " + C.gold + "44",
               padding:"12px 16px",borderRadius:8,cursor:grading||!state.snapshots.length?"not-allowed":"pointer",fontSize:11,fontFamily:F,
