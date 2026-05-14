@@ -1,6 +1,8 @@
-// /api/prices — public price proxy. No auth, no Anthropic, no token cost.
-// Browser sends a comma-separated ticker list, server fetches from a free
-// upstream and returns { ticker: price }. Yahoo first, Stooq as fallback.
+// /api/prices — public price proxy. No auth from the browser, no Anthropic, no token cost.
+// Primary: Finnhub (free tier, 60 calls/min, requires FINNHUB_API_KEY env var).
+// Fallback: Stooq CSV (free, no key, occasionally rate-limited).
+
+const FINNHUB_KEY = process.env.FINNHUB_API_KEY;
 
 export default async function handler(req, res) {
   const tickersParam = (req.query.tickers || "").toString().trim();
@@ -15,44 +17,41 @@ export default async function handler(req, res) {
   const results = {};
   const errors = {};
 
-  // Yahoo: single-call batch via /v7/finance/quote
-  try {
-    const url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + encodeURIComponent(tickers.join(","));
-    const r = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; TeoCapital/1.0)" },
-    });
-    if (r.ok) {
-      const data = await r.json();
-      const quotes = (data && data.quoteResponse && data.quoteResponse.result) || [];
-      quotes.forEach(q => {
-        const sym = q.symbol;
-        const px = q.regularMarketPrice ?? q.postMarketPrice ?? q.preMarketPrice;
-        if (sym && typeof px === "number") results[sym] = px;
-      });
-    } else {
-      errors.yahoo = "HTTP " + r.status;
-    }
-  } catch (e) {
-    errors.yahoo = e.message || String(e);
+  // Primary: Finnhub /quote endpoint, one ticker at a time but parallel.
+  if (FINNHUB_KEY) {
+    await Promise.all(tickers.map(async function(t) {
+      try {
+        const url = "https://finnhub.io/api/v1/quote?symbol=" + encodeURIComponent(t) + "&token=" + encodeURIComponent(FINNHUB_KEY);
+        const r = await fetch(url);
+        if (!r.ok) { errors[t] = "finnhub HTTP " + r.status; return; }
+        const data = await r.json();
+        // Finnhub returns { c: current, h, l, o, pc, ... }. c=0 means no data for symbol.
+        if (data && typeof data.c === "number" && data.c > 0) {
+          results[t] = data.c;
+        }
+      } catch (e) {
+        errors[t] = "finnhub: " + (e.message || String(e));
+      }
+    }));
+  } else {
+    errors._key = "FINNHUB_API_KEY not set on server";
   }
 
-  // For anything Yahoo missed, try Stooq one ticker at a time (CSV).
+  // Fallback: Stooq CSV for any ticker we still don't have a price for.
   const missing = tickers.filter(t => !(t in results));
   for (const t of missing) {
     try {
-      // Stooq uses lowercase + .us suffix for US tickers
       const url = "https://stooq.com/q/l/?s=" + encodeURIComponent(t.toLowerCase()) + ".us&f=sd2t2ohlcv&h&e=csv";
       const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
       if (!r.ok) continue;
       const txt = await r.text();
-      // CSV: Symbol,Date,Time,Open,High,Low,Close,Volume
       const lines = txt.trim().split("\n");
       if (lines.length < 2) continue;
       const cols = lines[1].split(",");
       const close = parseFloat(cols[6]);
-      if (Number.isFinite(close)) results[t] = close;
+      if (Number.isFinite(close) && close > 0) results[t] = close;
     } catch (e) {
-      // swallow per-ticker errors; we'll just return what we got
+      // per-ticker failures are silent; we return what we got
     }
   }
 
