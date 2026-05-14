@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, createContext, useContext } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 const _fl = document.createElement("link");
@@ -7,16 +7,46 @@ _fl.href = "https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Je
 document.head.appendChild(_fl);
 
 const _st = document.createElement("style");
-_st.textContent = "* {box-sizing:border-box;margin:0;padding:0} body{background:#07070f} ::-webkit-scrollbar{width:3px} ::-webkit-scrollbar-thumb{background:#2a2a40;border-radius:2px} @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}} @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}} .fu{animation:fadeUp .45s ease both} .pulse{animation:pulse 1.5s ease infinite} .shake{animation:shake .4s ease} input{font-family:'JetBrains Mono',monospace} input:focus{outline:none}";
+_st.textContent = [
+  "* {box-sizing:border-box;margin:0;padding:0}",
+  "html,body{background:var(--bg);transition:background .25s ease}",
+  ":root[data-theme='dark']{--bg:#07070f;--scrollbar:#2a2a40}",
+  ":root[data-theme='light']{--bg:#f7f8fa;--scrollbar:#cfd2d8}",
+  "::-webkit-scrollbar{width:6px}",
+  "::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:3px}",
+  "@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}",
+  "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}",
+  "@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}",
+  ".fu{animation:fadeUp .45s ease both}",
+  ".pulse{animation:pulse 1.5s ease infinite}",
+  ".shake{animation:shake .4s ease}",
+  "input:focus{outline:none}",
+].join(" ");
 document.head.appendChild(_st);
 
 const SEED = 5000;
-const C = {
-  bg:"#07070f", bg2:"#0d0d1a", bg3:"#111120", border:"#1e1e35",
-  gold:"#c9a84c", gold2:"#f0c95e", green:"#00e5a0", red:"#ff4d6d",
-  blue:"#4d8fff", orange:"#ff8844", purple:"#9d6fff",
-  text:"#d4d4f0", muted:"#5a5a8a", dim:"#2a2a45", textdim:"#6060a0",
+
+// Two color palettes. Dark = original "digital terminal" vibe. Light = modern clean.
+const THEMES = {
+  dark: {
+    bg:"#07070f", bg2:"#0d0d1a", bg3:"#111120", border:"#1e1e35",
+    gold:"#c9a84c", gold2:"#f0c95e", green:"#00e5a0", red:"#ff4d6d",
+    blue:"#4d8fff", orange:"#ff8844", purple:"#9d6fff",
+    text:"#d4d4f0", muted:"#5a5a8a", dim:"#2a2a45", textdim:"#6060a0",
+    bgScrim:"rgba(0,0,0,0.8)", chartGrid:"#1e1e35", benchLine:"#9d6fff",
+  },
+  light: {
+    bg:"#f7f8fa", bg2:"#ffffff", bg3:"#f1f2f5", border:"#e3e5ea",
+    gold:"#a16207", gold2:"#b45309", green:"#16a34a", red:"#dc2626",
+    blue:"#2563eb", orange:"#ea580c", purple:"#7c3aed",
+    text:"#111827", muted:"#6b7280", dim:"#cbd0d8", textdim:"#4b5563",
+    bgScrim:"rgba(15,23,42,0.45)", chartGrid:"#e3e5ea", benchLine:"#7c3aed",
+  },
 };
+
+const ThemeContext = createContext(THEMES.dark);
+const useC = () => useContext(ThemeContext);
+
 const F = "'JetBrains Mono',monospace";
 const FS = "'Syne',sans-serif";
 const fmt = n => "$" + Number(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -243,25 +273,40 @@ async function runGrade(state, operatorCode) {
 }
 
 
-const ChartTip = ({ active, payload, seed }) => {
+const ChartTip = ({ active, payload, seed, benchTicker }) => {
+  const C = useC();
   if (!active || !payload || !payload.length) return null;
-  const v = payload[0].value;
+  const teoPt = payload.find(p => p.dataKey === "value");
+  const benchPt = payload.find(p => p.dataKey === "bench");
   const baseline = seed || SEED;
+  const teoV = teoPt ? teoPt.value : null;
+  const benchV = benchPt ? benchPt.value : null;
   return (
-    <div style={{background:"#0c0c1c",border:"1px solid " + C.border,padding:"8px 12px",borderRadius:6,fontFamily:F,fontSize:11}}>
-      <div style={{color:C.muted,marginBottom:3}}>{payload[0].payload.label}</div>
-      <div style={{color:v>=baseline?C.green:C.red,fontSize:15,fontWeight:700}}>{fmt(v)}</div>
-      <div style={{color:C.muted,fontSize:10}}>{((v/baseline-1)*100).toFixed(2)}% vs ${baseline.toLocaleString()}</div>
+    <div style={{background:C.bg2,border:"1px solid " + C.border,padding:"10px 12px",borderRadius:6,fontFamily:F,fontSize:11,minWidth:140}}>
+      <div style={{color:C.muted,marginBottom:6,fontSize:10}}>{(payload[0] && payload[0].payload && payload[0].payload.label) || ""}</div>
+      {teoV != null && (
+        <div style={{display:"flex",justifyContent:"space-between",gap:14,marginBottom:benchV!=null?4:0}}>
+          <span style={{color:C.muted}}>Teo</span>
+          <span style={{color:teoV>=baseline?C.green:C.red,fontWeight:700}}>{fmt(teoV)} <span style={{color:C.muted,fontWeight:400}}>({((teoV/baseline-1)*100).toFixed(2)}%)</span></span>
+        </div>
+      )}
+      {benchV != null && (
+        <div style={{display:"flex",justifyContent:"space-between",gap:14}}>
+          <span style={{color:C.muted}}>{benchTicker || "Bench"}</span>
+          <span style={{color:benchV>=baseline?C.green:C.red,fontWeight:700}}>{fmt(benchV)} <span style={{color:C.muted,fontWeight:400}}>({((benchV/baseline-1)*100).toFixed(2)}%)</span></span>
+        </div>
+      )}
     </div>
   );
 };
 
 function TxRow({ tx }) {
+  const C = useC();
   const isBuy = (tx.action || "").startsWith("BUY");
   const ac = isBuy ? C.green : C.red;
   const convColor = tx.conviction === "HIGH" ? C.green : tx.conviction === "MEDIUM" ? C.gold : C.muted;
   return (
-    <div style={{padding:"10px 12px",marginBottom:3,borderRadius:6,background:isBuy?"#091209":"#120909",borderLeft:"2px solid " + ac + "55",fontFamily:F}}>
+    <div style={{padding:"10px 12px",marginBottom:3,borderRadius:6,background:ac + "12",borderLeft:"2px solid " + ac + "55",fontFamily:F}}>
       <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center",marginBottom:4}}>
         <span style={{color:ac,fontWeight:700,fontSize:11,minWidth:50}}>{tx.action}</span>
         <span style={{color:C.text,fontWeight:700,fontSize:13}}>{tx.ticker}</span>
@@ -283,10 +328,11 @@ function TxRow({ tx }) {
 }
 
 function StopRow({ s }) {
+  const C = useC();
   const ac = s.order === "TAKE_PROFIT" ? C.green : C.orange;
   const label = s.order === "STOP_LOSS" ? "STOP LOSS" : s.order === "TAKE_PROFIT" ? "TAKE PROFIT" : "TRAILING";
   return (
-    <div style={{display:"flex",flexWrap:"wrap",gap:8,padding:"9px 12px",marginBottom:3,borderRadius:6,background:"#0d0d10",borderLeft:"2px solid " + ac + "66",fontFamily:F,alignItems:"center"}}>
+    <div style={{display:"flex",flexWrap:"wrap",gap:8,padding:"9px 12px",marginBottom:3,borderRadius:6,background:C.bg2,borderLeft:"2px solid " + ac + "66",fontFamily:F,alignItems:"center"}}>
       <span style={{color:ac,fontWeight:700,fontSize:10,letterSpacing:1,minWidth:90}}>{label}</span>
       <span style={{color:C.text,fontWeight:700,fontSize:12,minWidth:50}}>{s.ticker}</span>
       <span style={{color:C.muted,fontSize:10,minWidth:60}}>SELL {s.shares}sh</span>
@@ -298,10 +344,11 @@ function StopRow({ s }) {
 }
 
 function TriggeredRow({ t }) {
+  const C = useC();
   const isLoss = t.type === "STOP_LOSS";
   const ac = isLoss ? C.red : C.green;
   return (
-    <div style={{display:"flex",flexWrap:"wrap",gap:8,padding:"9px 12px",marginBottom:3,borderRadius:6,background:isLoss?"#1a0808":"#081a08",borderLeft:"2px solid " + ac,fontFamily:F,alignItems:"center"}}>
+    <div style={{display:"flex",flexWrap:"wrap",gap:8,padding:"9px 12px",marginBottom:3,borderRadius:6,background:ac + "15",borderLeft:"2px solid " + ac,fontFamily:F,alignItems:"center"}}>
       <span style={{fontSize:9,fontWeight:700,letterSpacing:1,color:ac}}>{isLoss ? "\u26a1 STOP HIT" : "\u2713 TARGET HIT"}</span>
       <span style={{color:C.text,fontWeight:700,fontSize:12}}>{t.ticker}</span>
       <span style={{fontSize:10,color:C.muted}}>@ ${Number(t.trigger_price).toFixed(2)}</span>
@@ -311,6 +358,7 @@ function TriggeredRow({ t }) {
 }
 
 function HoldingRow({ h, price }) {
+  const C = useC();
   const p = price || h.lastPrice || h.boughtAt;
   const mv = h.shares * p;
   const pnl = mv - h.shares * h.boughtAt;
@@ -334,6 +382,7 @@ function HoldingRow({ h, price }) {
 
 
 function GradeCard({ grade }) {
+  const C = useC();
   const gc = ({A:C.green,B:"#88ff44",C:C.gold,D:C.orange,F:C.red})[grade.grade] || C.muted;
   return (
     <div style={{background:C.bg2,border:"1px solid " + gc + "33",borderRadius:12,padding:22,fontFamily:F}} className="fu">
@@ -374,6 +423,7 @@ function GradeCard({ grade }) {
 
 
 function OperatorLogin({ onSubmit, onCancel }) {
+  const C = useC();
   const [code, setCode] = useState("");
   const [err, setErr] = useState("");
   const [shk, setShk] = useState(false);
@@ -386,7 +436,7 @@ function OperatorLogin({ onSubmit, onCancel }) {
   const inp = {background:C.bg3,border:"1px solid " + C.border,color:C.text,padding:"14px 16px",borderRadius:8,fontSize:15,letterSpacing:1,width:"100%",textAlign:"center"};
 
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}}>
+    <div style={{position:"fixed",inset:0,background:C.bgScrim,display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}}>
       <div className={shk ? "shake" : "fu"} style={{background:C.bg2,border:"1px solid " + C.gold + "55",borderRadius:14,padding:28,maxWidth:380,width:"100%",fontFamily:F}}>
         <div style={{textAlign:"center",marginBottom:20}}>
           <div style={{fontSize:28,marginBottom:8}}>{"\ud83d\udd11"}</div>
@@ -423,22 +473,32 @@ const FOCUS_CHIPS = [
   { id: "international",label: "International",   directive: "Include international exposure via ADRs and country/region ETFs alongside US names." },
 ];
 
+const BENCHMARK_OPTIONS = [
+  { id: "VTI", label: "VTI", desc: "Total US market" },
+  { id: "SPY", label: "SPY", desc: "S&P 500" },
+  { id: "QQQ", label: "QQQ", desc: "Nasdaq 100" },
+];
+
 const DEFAULT_CONFIG = {
   sprintName: "4-Week Sprint",
   seed: 5000,
   weeks: 4,
   risk: "Aggressive",
   focusIds: [],
+  benchmark: "VTI",
+  benchmarkStart: null, // set on first deploy
 };
 
 const BLANK = {config:null,holdings:[],cash:0,totalValue:0,snapshots:[],history:[],grade:null};
 
 function ConfigForm({ initial, onDeploy }) {
+  const C = useC();
   const [name, setName] = useState((initial && initial.sprintName) || DEFAULT_CONFIG.sprintName);
   const [seed, setSeed] = useState((initial && initial.seed) || DEFAULT_CONFIG.seed);
   const [weeks, setWeeks] = useState((initial && initial.weeks) || DEFAULT_CONFIG.weeks);
   const [risk, setRisk] = useState((initial && initial.risk) || DEFAULT_CONFIG.risk);
   const [focusIds, setFocusIds] = useState((initial && initial.focusIds) || []);
+  const [benchmark, setBenchmark] = useState((initial && initial.benchmark) || DEFAULT_CONFIG.benchmark);
   const [err, setErr] = useState("");
 
   const toggleChip = function(id) {
@@ -452,7 +512,7 @@ function ConfigForm({ initial, onDeploy }) {
     const sd = Number(seed), wk = Number(weeks);
     if (!Number.isFinite(sd) || sd < 100) { setErr("Seed must be at least $100"); return; }
     if (!Number.isFinite(wk) || wk < 1 || wk > 52) { setErr("Duration must be 1-52 weeks"); return; }
-    onDeploy({ sprintName: name.trim(), seed: sd, weeks: wk, risk: risk, focusIds: focusIds });
+    onDeploy({ sprintName: name.trim(), seed: sd, weeks: wk, risk: risk, focusIds: focusIds, benchmark: benchmark });
   };
 
   const lbl = {fontSize:10,letterSpacing:2,color:C.muted,marginBottom:6,textTransform:"uppercase"};
@@ -510,6 +570,26 @@ function ConfigForm({ initial, onDeploy }) {
         </div>
       </div>
 
+      <div style={{marginBottom:14}}>
+        <div style={lbl}>Benchmark (locked in at deploy)</div>
+        <div style={{display:"flex",gap:6}}>
+          {BENCHMARK_OPTIONS.map(function(b){
+            const active = b.id === benchmark;
+            return (
+              <button key={b.id} onClick={function(){setBenchmark(b.id);}} style={{
+                flex:1,background:active?"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")":"transparent",
+                color:active?"#0a0800":C.text,border:"1px solid " + (active?"transparent":C.border),
+                padding:"9px 6px",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:F,fontWeight:active?700:400,
+                display:"flex",flexDirection:"column",gap:2,
+              }}>
+                <span style={{letterSpacing:1}}>{b.label}</span>
+                <span style={{fontSize:8,color:active?"#0a0800":C.muted,fontWeight:400}}>{b.desc}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {err && <div style={{color:C.red,fontSize:11,marginBottom:10,textAlign:"center"}}>{err}</div>}
 
       <button onClick={submit} style={{
@@ -522,6 +602,8 @@ function ConfigForm({ initial, onDeploy }) {
 
 
 export default function App() {
+  const [theme, setTheme] = useState("dark");
+  const C = THEMES[theme];
   const [state, setState] = useState(null);
   const [tab, setTab] = useState("latest");
   const [snapIdx, setSnapIdx] = useState(0);
@@ -535,6 +617,24 @@ export default function App() {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [, refreshTick] = useState(0); // forces re-render so "X seconds ago" updates
+
+  // Restore theme choice from device on mount.
+  useEffect(function() {
+    try {
+      const saved = localStorage.getItem("teo_theme");
+      if (saved === "light" || saved === "dark") setTheme(saved);
+    } catch(e) {}
+  }, []);
+
+  // Reflect theme on the root element so global CSS variables can switch.
+  useEffect(function() {
+    if (typeof document !== "undefined") {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+    try { localStorage.setItem("teo_theme", theme); } catch(e) {}
+  }, [theme]);
+
+  const toggleTheme = function() { setTheme(t => t === "dark" ? "light" : "dark"); };
 
   // On mount: fetch shared state from server, and try to restore operator code from this device.
   useEffect(function() {
@@ -588,15 +688,18 @@ export default function App() {
 
   const isOperator = !!operatorCode;
 
-  // Fetch live prices for current holdings. Free, no Anthropic, no tokens.
+  // Fetch live prices for current holdings AND the configured benchmark.
+  // Free, no Anthropic, no tokens.
   const refreshPrices = async function() {
-    if (!state || !state.holdings || !state.holdings.length) return;
+    if (!state) return;
     if (refreshing) return;
+    const heldTickers = (state.holdings || []).map(h => h.ticker).filter(Boolean);
+    const benchTicker = state.config && state.config.benchmark;
+    const allTickers = Array.from(new Set(heldTickers.concat(benchTicker ? [benchTicker] : [])));
+    if (!allTickers.length) return;
     setRefreshing(true);
     try {
-      const tickers = state.holdings.map(h => h.ticker).filter(Boolean).join(",");
-      if (!tickers) { setRefreshing(false); return; }
-      const r = await fetch("/api/prices?tickers=" + encodeURIComponent(tickers));
+      const r = await fetch("/api/prices?tickers=" + encodeURIComponent(allTickers.join(",")));
       if (r.ok) {
         const body = await r.json();
         if (body && body.prices) {
@@ -608,10 +711,11 @@ export default function App() {
     setRefreshing(false);
   };
 
-  // Auto-refresh prices every 60s while there are holdings and the tab is visible.
+  // Auto-refresh prices every 60s while we have holdings or a benchmark configured.
   useEffect(function() {
-    const have = state && state.holdings && state.holdings.length;
-    if (!have) return;
+    const haveHoldings = state && state.holdings && state.holdings.length;
+    const haveBench = state && state.config && state.config.benchmark;
+    if (!haveHoldings && !haveBench) return;
     refreshPrices();
     const id = setInterval(function() {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
@@ -620,13 +724,28 @@ export default function App() {
     }, 60000);
     return function() { clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state && state.holdings && state.holdings.map(h => h.ticker).join(",")]);
+  }, [
+    state && state.holdings && state.holdings.map(h => h.ticker).join(","),
+    state && state.config && state.config.benchmark,
+  ]);
 
   // Tick every 15s so the "Xs ago" label stays fresh between refreshes.
   useEffect(function() {
     const id = setInterval(function() { refreshTick(x => x + 1); }, 15000);
     return function() { clearInterval(id); };
   }, []);
+
+  // Fetch current price for a single ticker. Used to capture benchmark prices.
+  const fetchOnePrice = async function(ticker) {
+    if (!ticker) return null;
+    try {
+      const r = await fetch("/api/prices?tickers=" + encodeURIComponent(ticker));
+      if (!r.ok) return null;
+      const body = await r.json();
+      const px = body && body.prices && body.prices[ticker];
+      return typeof px === "number" ? px : null;
+    } catch(e) { return null; }
+  };
 
   // For the first deploy, doDecision is called with a config object — that config
   // is what was just selected on the ConfigForm. For subsequent CHECK & DECIDE calls,
@@ -645,7 +764,16 @@ export default function App() {
         history: [{ label: "Start", value: deployConfig.seed }],
       });
     }
-    const effectiveConfig = (baseState && baseState.config) || deployConfig || DEFAULT_CONFIG;
+    let effectiveConfig = (baseState && baseState.config) || deployConfig || DEFAULT_CONFIG;
+
+    // Capture benchmark price for this snapshot. On first deploy, also lock in
+    // the starting benchmark price so we can compute the comparison forever.
+    const benchTicker = effectiveConfig.benchmark;
+    let benchPxNow = benchTicker ? await fetchOnePrice(benchTicker) : null;
+    if (deployConfig && benchPxNow != null) {
+      effectiveConfig = Object.assign({}, effectiveConfig, { benchmarkStart: benchPxNow });
+      baseState = Object.assign({}, baseState, { config: effectiveConfig });
+    }
 
     try {
       const priorStops = baseState.snapshots && baseState.snapshots.length ? baseState.snapshots[baseState.snapshots.length-1].stopLimits || [] : [];
@@ -656,6 +784,7 @@ export default function App() {
         index: baseState.snapshots.length,
         timestamp: new Date().toLocaleString(),
         macro: macro,
+        benchmarkPrice: benchPxNow, // null if we couldn't fetch — chart handles that
         pricedIn: d.priced_in || [],
         opportunities: d.opportunities || [],
         earningsNearby: d.earnings_nearby || [],
@@ -705,9 +834,11 @@ export default function App() {
   };
 
   if (loading || !state) return (
-    <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{color:C.gold,fontFamily:F,fontSize:12,letterSpacing:3}} className="pulse">LOADING...</div>
-    </div>
+    <ThemeContext.Provider value={C}>
+      <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{color:C.gold,fontFamily:F,fontSize:12,letterSpacing:3}} className="pulse">LOADING...</div>
+      </div>
+    </ThemeContext.Provider>
   );
 
   var cfg = state.config || DEFAULT_CONFIG;
@@ -735,6 +866,40 @@ export default function App() {
   var isFirst = !state.snapshots.length;
   var opEl = showOpLogin ? <OperatorLogin onSubmit={handleOpSubmit} onCancel={function(){setShowOpLogin(false);}} /> : null;
 
+  // ── Benchmark comparison ────────────────────────────────────────────────
+  // Compute the benchmark's live value (normalized so it starts at seedAmt) and
+  // its return %. Also build chartData with both Teo and benchmark series.
+  var benchTicker = cfg.benchmark;
+  var benchStart = cfg.benchmarkStart;
+  var benchLivePx = benchTicker ? livePrices[benchTicker] : null;
+  var benchLiveValue = null;
+  var benchReturn = null;
+  if (benchStart && benchLivePx != null) {
+    benchLiveValue = seedAmt * (benchLivePx / benchStart);
+    benchReturn = (benchLivePx / benchStart - 1) * 100;
+  }
+  var edgeReturn = (benchReturn != null) ? totalReturn - benchReturn : null;
+
+  // Chart data: combine Teo's history with benchmark values at each snapshot.
+  // First point is always "Start" — both lines start at seedAmt.
+  var chartData = [];
+  if (state.history && state.history.length) {
+    var snapsByIdx = state.snapshots || [];
+    chartData = state.history.map(function(point, i) {
+      var row = { label: point.label, value: point.value };
+      if (i === 0 && benchStart) {
+        row.bench = seedAmt;
+      } else if (benchStart && snapsByIdx[i-1] && typeof snapsByIdx[i-1].benchmarkPrice === "number") {
+        row.bench = seedAmt * (snapsByIdx[i-1].benchmarkPrice / benchStart);
+      }
+      return row;
+    });
+    // Append a "live" point at the end so the lines update in real-time on the chart.
+    if (benchLiveValue != null && haveAnyLive) {
+      chartData.push({ label: "now", value: liveTotal, bench: benchLiveValue });
+    }
+  }
+
   // "Last refreshed Xs ago" helper.
   var refreshLabel = "";
   if (lastRefresh) {
@@ -744,65 +909,76 @@ export default function App() {
 
   /* ── SPLASH ── */
   if (isFirst && !busy) return (
-    <div>
-      {opEl}
-      <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 16px",fontFamily:F}}>
-        <div style={{maxWidth:480,width:"100%"}} className="fu">
-          <div style={{textAlign:"center",marginBottom:32}}>
-            <div style={{fontSize:10,letterSpacing:5,color:C.gold,marginBottom:10}}>{"\u25c8"} TEO CAPITAL {"\u25c8"}</div>
-            <div style={{fontSize:34,fontWeight:800,fontFamily:FS,color:C.text,lineHeight:1.1,marginBottom:10}}>New Sprint</div>
-            <div style={{fontSize:12,color:C.textdim,lineHeight:1.9,marginTop:8}}>Elite AI trader. Real prices. Risk-managed framework.</div>
+    <ThemeContext.Provider value={C}>
+      <div>
+        {opEl}
+        <div style={{position:"fixed",top:14,right:14,zIndex:50}}>
+          <button onClick={toggleTheme} style={{background:C.bg2,color:C.text,border:"1px solid " + C.border,borderRadius:20,padding:"6px 12px",cursor:"pointer",fontSize:11,fontFamily:F}}>{theme==="dark"?"\u263c light":"\u263e dark"}</button>
+        </div>
+        <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 16px",fontFamily:F}}>
+          <div style={{maxWidth:480,width:"100%"}} className="fu">
+            <div style={{textAlign:"center",marginBottom:32}}>
+              <div style={{fontSize:10,letterSpacing:5,color:C.gold,marginBottom:10}}>{"\u25c8"} TEO CAPITAL {"\u25c8"}</div>
+              <div style={{fontSize:34,fontWeight:800,fontFamily:FS,color:C.text,lineHeight:1.1,marginBottom:10}}>New Sprint</div>
+              <div style={{fontSize:12,color:C.textdim,lineHeight:1.9,marginTop:8}}>Elite AI trader. Real prices. Risk-managed framework.</div>
+            </div>
+            {!isOperator && (
+              <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:12,padding:"18px 20px",marginBottom:22}}>
+                {[
+                  "Position sizing by conviction & risk-reward",
+                  "Correlation-aware diversification",
+                  "Earnings calendar awareness",
+                  "Priced-in vs genuine opportunity analysis",
+                  "Stop-limit orders on every position",
+                  "Cash reserves when uncertain",
+                ].map(function(t, i) {
+                  return <div key={i} style={{display:"flex",gap:10,marginBottom:i<5?8:0,alignItems:"flex-start"}}>
+                    <span style={{color:C.gold,fontSize:10,flexShrink:0}}>{"\u25c8"}</span>
+                    <span style={{fontSize:11,color:C.text,lineHeight:1.6}}>{t}</span>
+                  </div>;
+                })}
+              </div>
+            )}
+            {isOperator ? (
+              <ConfigForm onDeploy={function(cfg){ doDecision(cfg); }} />
+            ) : (
+              <div style={{background:C.bg2,border:"1px dashed " + C.border,borderRadius:10,padding:"18px 20px",textAlign:"center"}}>
+                <div style={{fontSize:11,color:C.textdim,lineHeight:1.8,marginBottom:14}}>Teo hasn't deployed capital yet. Only the operator can start a sprint.</div>
+                <button onClick={function(){setShowOpLogin(true);}} style={{background:"transparent",color:C.gold,border:"1px solid " + C.gold + "55",padding:"10px 20px",borderRadius:8,cursor:"pointer",fontSize:11,fontFamily:F,letterSpacing:1}}>{"\ud83d\udd11"} OPERATOR LOGIN</button>
+              </div>
+            )}
+            {error && <div style={{marginTop:10,padding:10,background:C.red+"15",border:"1px solid " + C.red + "33",borderRadius:6,color:C.red,fontSize:10}}>{error}</div>}
+            <div style={{textAlign:"center",marginTop:14,fontSize:9,color:C.dim}}>SIMULATED {"\u00b7"} REAL PRICES {"\u00b7"} NOT FINANCIAL ADVICE</div>
           </div>
-          {!isOperator && (
-            <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:12,padding:"18px 20px",marginBottom:22}}>
-              {[
-                "Position sizing by conviction & risk-reward",
-                "Correlation-aware diversification",
-                "Earnings calendar awareness",
-                "Priced-in vs genuine opportunity analysis",
-                "Stop-limit orders on every position",
-                "Cash reserves when uncertain",
-              ].map(function(t, i) {
-                return <div key={i} style={{display:"flex",gap:10,marginBottom:i<5?8:0,alignItems:"flex-start"}}>
-                  <span style={{color:C.gold,fontSize:10,flexShrink:0}}>{"\u25c8"}</span>
-                  <span style={{fontSize:11,color:C.text,lineHeight:1.6}}>{t}</span>
-                </div>;
-              })}
-            </div>
-          )}
-          {isOperator ? (
-            <ConfigForm onDeploy={function(cfg){ doDecision(cfg); }} />
-          ) : (
-            <div style={{background:C.bg2,border:"1px dashed " + C.border,borderRadius:10,padding:"18px 20px",textAlign:"center"}}>
-              <div style={{fontSize:11,color:C.textdim,lineHeight:1.8,marginBottom:14}}>Teo hasn't deployed capital yet. Only the operator can start a sprint.</div>
-              <button onClick={function(){setShowOpLogin(true);}} style={{background:"transparent",color:C.gold,border:"1px solid " + C.gold + "55",padding:"10px 20px",borderRadius:8,cursor:"pointer",fontSize:11,fontFamily:F,letterSpacing:1}}>{"\ud83d\udd11"} OPERATOR LOGIN</button>
-            </div>
-          )}
-          {error && <div style={{marginTop:10,padding:10,background:"#1a0808",border:"1px solid " + C.red + "33",borderRadius:6,color:C.red,fontSize:10}}>{error}</div>}
-          <div style={{textAlign:"center",marginTop:14,fontSize:9,color:C.dim}}>SIMULATED {"\u00b7"} REAL PRICES {"\u00b7"} NOT FINANCIAL ADVICE</div>
         </div>
       </div>
-    </div>
+    </ThemeContext.Provider>
   );
 
   /* ── LOADING ── */
   if (busy) return (
-    <div style={{background:C.bg,minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:F,gap:18}}>
-      <div style={{fontSize:36}}>{"\u26a1"}</div>
-      <div style={{fontSize:14,fontWeight:700,fontFamily:FS,color:C.text}}>{isFirst ? "Deploying capital..." : "Checking markets..."}</div>
-      <div style={{fontSize:11,color:C.textdim,textAlign:"center",lineHeight:1.9}}>Searching prices {"\u00b7"} Reading news {"\u00b7"} Analyzing correlations</div>
-      <div style={{display:"flex",gap:6}}>{[0,1,2].map(function(i){return <div key={i} style={{width:8,height:8,borderRadius:"50%",background:C.gold,animation:"pulse 1.5s ease " + (i*0.3) + "s infinite"}} />;})}</div>
-    </div>
+    <ThemeContext.Provider value={C}>
+      <div style={{background:C.bg,minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:F,gap:18}}>
+        <div style={{fontSize:36}}>{"\u26a1"}</div>
+        <div style={{fontSize:14,fontWeight:700,fontFamily:FS,color:C.text}}>{isFirst ? "Deploying capital..." : "Checking markets..."}</div>
+        <div style={{fontSize:11,color:C.textdim,textAlign:"center",lineHeight:1.9}}>Searching prices {"\u00b7"} Reading news {"\u00b7"} Analyzing correlations</div>
+        <div style={{display:"flex",gap:6}}>{[0,1,2].map(function(i){return <div key={i} style={{width:8,height:8,borderRadius:"50%",background:C.gold,animation:"pulse 1.5s ease " + (i*0.3) + "s infinite"}} />;})}</div>
+      </div>
+    </ThemeContext.Provider>
   );
 
   /* ── MAIN DASHBOARD ── */
   return (
-    <div>
-      {opEl}
-      <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:F,padding:"16px 16px 90px",maxWidth:900,margin:"0 auto"}}>
+    <ThemeContext.Provider value={C}>
+      <div>
+        {opEl}
+        <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:F,padding:"16px 16px 90px",maxWidth:900,margin:"0 auto"}}>
+          <div style={{position:"fixed",top:14,right:14,zIndex:50}}>
+            <button onClick={toggleTheme} style={{background:C.bg2,color:C.text,border:"1px solid " + C.border,borderRadius:20,padding:"6px 12px",cursor:"pointer",fontSize:11,fontFamily:F}}>{theme==="dark"?"\u263c light":"\u263e dark"}</button>
+          </div>
 
         {/* Header */}
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14,flexWrap:"wrap",gap:10}}>
           <div>
             <div style={{fontSize:9,letterSpacing:4,color:C.gold,marginBottom:3}}>{"\u25c8"} TEO CAPITAL {"\u00b7"} {sprintName.toUpperCase()}</div>
             <div style={{fontSize:9,color:C.muted}}>{state.snapshots.length} decision{state.snapshots.length!==1?"s":""} {"\u00b7"} {cfg.weeks}-week target {latest ? " \u00b7 last decided " + latest.timestamp : ""}</div>
@@ -812,7 +988,7 @@ export default function App() {
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:28,fontWeight:800,fontFamily:FS,color:isUp?C.green:C.red,lineHeight:1}}>{fmt(liveTotal)}</div>
-            <div style={{fontSize:12,color:isUp?"#00bb66":"#cc3333",marginTop:2}}>{fmtp(totalReturn)} on ${seedAmt.toLocaleString()}</div>
+            <div style={{fontSize:12,color:isUp?C.green:C.red,marginTop:2}}>{fmtp(totalReturn)} on ${seedAmt.toLocaleString()}</div>
             {state.holdings.length > 0 && (
               <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"flex-end",marginTop:6}}>
                 <button onClick={refreshPrices} disabled={refreshing} style={{background:"transparent",color:refreshing?C.muted:C.gold,border:"1px solid " + C.gold + "44",padding:"5px 10px",borderRadius:6,cursor:refreshing?"not-allowed":"pointer",fontSize:9,fontFamily:F,letterSpacing:1}}>
@@ -824,18 +1000,45 @@ export default function App() {
           </div>
         </div>
 
+        {/* Benchmark comparison pills */}
+        {benchTicker && benchReturn != null && (
+          <div style={{display:"flex",gap:8,marginBottom:18,flexWrap:"wrap"}}>
+            <div style={{flex:"1 1 110px",background:C.bg2,border:"1px solid " + (isUp?C.green+"33":C.red+"33"),borderRadius:8,padding:"10px 14px"}}>
+              <div style={{fontSize:8,letterSpacing:2,color:C.muted,marginBottom:3}}>TEO</div>
+              <div style={{fontSize:18,fontWeight:700,fontFamily:FS,color:isUp?C.green:C.red}}>{fmtp(totalReturn)}</div>
+            </div>
+            <div style={{flex:"1 1 110px",background:C.bg2,border:"1px solid " + C.border,borderRadius:8,padding:"10px 14px"}}>
+              <div style={{fontSize:8,letterSpacing:2,color:C.muted,marginBottom:3}}>{benchTicker}</div>
+              <div style={{fontSize:18,fontWeight:700,fontFamily:FS,color:benchReturn>=0?C.green:C.red}}>{fmtp(benchReturn)}</div>
+            </div>
+            <div style={{flex:"1 1 110px",background:C.bg2,border:"1px solid " + ((edgeReturn||0)>=0?C.gold+"55":C.muted+"33"),borderRadius:8,padding:"10px 14px"}}>
+              <div style={{fontSize:8,letterSpacing:2,color:C.muted,marginBottom:3}}>EDGE vs {benchTicker}</div>
+              <div style={{fontSize:18,fontWeight:700,fontFamily:FS,color:(edgeReturn||0)>=0?C.gold:C.muted}}>{fmtp(edgeReturn)}</div>
+            </div>
+          </div>
+        )}
+
         {/* Chart */}
-        {state.history.length > 1 && (
+        {chartData.length > 1 && (
           <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:10,padding:"14px 10px 8px",marginBottom:18}}>
-            <ResponsiveContainer width="100%" height={120}>
-              <LineChart data={state.history}>
+            <ResponsiveContainer width="100%" height={140}>
+              <LineChart data={chartData}>
                 <XAxis dataKey="label" tick={{fill:C.muted,fontSize:9}} axisLine={false} tickLine={false} />
-                <YAxis domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} axisLine={false} tickLine={false} width={62} tickFormatter={function(v){return "$"+v;}} />
-                <Tooltip content={function(props){ return <ChartTip {...props} seed={seedAmt} />; }} />
+                <YAxis domain={["auto","auto"]} tick={{fill:C.muted,fontSize:9}} axisLine={false} tickLine={false} width={62} tickFormatter={function(v){return "$"+Math.round(v);}} />
+                <Tooltip content={function(props){ return <ChartTip {...props} seed={seedAmt} benchTicker={benchTicker} />; }} />
                 <ReferenceLine y={seedAmt} stroke={C.dim} strokeDasharray="3 3" />
-                <Line type="monotone" dataKey="value" stroke={isUp?C.green:C.red} strokeWidth={2.5} dot={{r:3,fill:isUp?C.green:C.red}} />
+                {benchTicker && benchStart && (
+                  <Line type="monotone" dataKey="bench" stroke={C.benchLine} strokeWidth={1.8} strokeDasharray="4 3" dot={false} name={benchTicker} />
+                )}
+                <Line type="monotone" dataKey="value" stroke={isUp?C.green:C.red} strokeWidth={2.5} dot={{r:3,fill:isUp?C.green:C.red}} name="Teo" />
               </LineChart>
             </ResponsiveContainer>
+            {benchTicker && benchStart && (
+              <div style={{display:"flex",gap:14,justifyContent:"center",fontSize:9,color:C.muted,marginTop:4}}>
+                <span style={{display:"flex",alignItems:"center",gap:5}}><span style={{display:"inline-block",width:14,height:2,background:isUp?C.green:C.red}}/>Teo</span>
+                <span style={{display:"flex",alignItems:"center",gap:5}}><span style={{display:"inline-block",width:14,height:2,background:C.benchLine,borderTop:"1px dashed transparent"}}/>{benchTicker}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -899,7 +1102,7 @@ export default function App() {
 
             {/* Macro + priced in */}
             {latest.macro && (
-              <div style={{background:"#0a0a14",border:"1px solid " + C.border,borderRadius:10,padding:"14px 16px",marginBottom:12}}>
+              <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:10,padding:"14px 16px",marginBottom:12}}>
                 <div style={{fontSize:9,letterSpacing:3,color:C.blue,marginBottom:10}}>{"\u25c8"} MARKET ASSESSMENT</div>
                 <div style={{fontSize:11,color:C.text,lineHeight:1.7,marginBottom:10,borderBottom:"1px solid " + C.border,paddingBottom:10}}>{latest.macro}</div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -971,14 +1174,14 @@ export default function App() {
             {latest.stopLimits && latest.stopLimits.length > 0 && (
               <div style={{marginBottom:14}}>
                 <div style={{fontSize:9,letterSpacing:3,color:C.orange,marginBottom:6}}>STANDING ORDERS {"\u2014"} SCHWAB</div>
-                <div style={{background:"#0d0808",border:"1px solid " + C.orange + "22",borderRadius:8,padding:"10px 12px",marginBottom:8,fontSize:10,color:C.orange}}>{"\u26a0"} Simulated. Enter these stop-limits manually if following along.</div>
+                <div style={{background:C.orange+"15",border:"1px solid " + C.orange + "22",borderRadius:8,padding:"10px 12px",marginBottom:8,fontSize:10,color:C.orange}}>{"\u26a0"} Simulated. Enter these stop-limits manually if following along.</div>
                 {latest.stopLimits.map(function(s,i){return <StopRow key={i} s={s} />;})}
               </div>
             )}
 
             {/* Cash reserve */}
             {latest.cashReserved > 0 && (
-              <div style={{background:"#0d0d08",border:"1px solid " + C.gold + "33",borderRadius:8,padding:"12px 14px"}}>
+              <div style={{background:C.gold+"15",border:"1px solid " + C.gold + "33",borderRadius:8,padding:"12px 14px"}}>
                 <div style={{fontSize:9,letterSpacing:2,color:C.gold,marginBottom:4}}>{"\ud83d\udcb0"} CASH RESERVED</div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontSize:11,color:C.text}}>{latest.reserveReason}</span>
@@ -1053,11 +1256,11 @@ export default function App() {
           </div>
         )}
 
-        {error && <div style={{marginTop:12,padding:"10px 14px",background:"#150808",border:"1px solid " + C.red + "33",borderRadius:8,color:C.red,fontSize:11}}>{"\u26a0"} {error}</div>}
+        {error && <div style={{marginTop:12,padding:"10px 14px",background:C.red+"15",border:"1px solid " + C.red + "33",borderRadius:8,color:C.red,fontSize:11}}>{"\u26a0"} {error}</div>}
 
         {/* Bottom bar — operator only */}
         {isOperator ? (
-          <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#07070fee",borderTop:"1px solid " + C.border,padding:"12px 20px",display:"flex",gap:8,alignItems:"center",justifyContent:"center",flexWrap:"wrap",zIndex:100}}>
+          <div style={{position:"fixed",bottom:0,left:0,right:0,background:C.bg2 + "f2",backdropFilter:"blur(8px)",borderTop:"1px solid " + C.border,padding:"12px 20px",display:"flex",gap:8,alignItems:"center",justifyContent:"center",flexWrap:"wrap",zIndex:100}}>
             <button onClick={doDecision} disabled={busy} style={{
               background:busy?"transparent":"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",
               color:busy?C.muted:"#0a0800",border:"1px solid " + (busy?C.border:"transparent"),
@@ -1072,6 +1275,7 @@ export default function App() {
           </div>
         ) : null}
       </div>
-    </div>
+      </div>
+    </ThemeContext.Provider>
   );
 }
