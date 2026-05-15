@@ -212,8 +212,12 @@ async function makeDecision(holdings, cash, snapNum, priorStops, operatorCode, c
   });
   const tickers = holdings.map(h => h.ticker);
   const desc = isFirst
-    ? "Starting capital: $" + cash.toFixed(2) + " cash. No positions."
-    : holdings.map(h => h.ticker + ": " + h.shares + "sh @ $" + h.boughtAt.toFixed(2) + " last $" + h.lastPrice.toFixed(2)).join("\n") + "\nCash: $" + cash.toFixed(2);
+    ? "Starting capital: $" + Number(cash || 0).toFixed(2) + " cash. No positions."
+    : holdings.map(h => {
+        const last = h.lastPrice != null ? h.lastPrice : h.boughtAt;
+        const bought = h.boughtAt != null ? h.boughtAt : 0;
+        return h.ticker + ": " + (h.shares || 0) + "sh @ $" + Number(bought).toFixed(2) + " last $" + Number(last).toFixed(2);
+      }).join("\n") + "\nCash: $" + Number(cash || 0).toFixed(2);
 
   const system = "You are an elite AI portfolio manager. MAXIMIZE $" + seedAmt + " over " + weeks + " weeks. " + riskDir + " Max 6 positions. Schwab-compatible (stocks, ETFs, standard options).\n\nFRAMEWORK:\n- Assess if news is ALREADY PRICED IN or a GENUINE SURPRISE before acting\n- Size by conviction: HIGH=25-35%, MEDIUM=15-20%, SPECULATIVE=5-8% (adjust per the risk tolerance above)\n- Diversify by THEME not just ticker count\n- Check earnings calendar for held names (5 day lookahead)\n- Set stops 7-10% below entry, profit targets +12-25%\n- Trail stops on winners. Hold cash when uncertain.\n- If prior stop was crossed, treat as triggered." + focusBlock + "\n\nSearch real prices via web search. Read today's news.\n\nRESPOND WITH ONLY THIS JSON (no other text):\n{\"fetched_prices\":{\"TICKER\":123.45},\"macro\":\"market conditions sentence\",\"priced_in\":[\"things baked in\"],\"opportunities\":[\"genuine edges\"],\"earnings_nearby\":[{\"ticker\":\"X\",\"date\":\"May 5\",\"action\":\"HOLD\",\"why\":\"reason\"}],\"themes\":[{\"name\":\"AI\",\"tickers\":[\"NVDA\"],\"pct\":30}],\"triggered_stops\":[],\"transactions\":[{\"action\":\"BUY\",\"ticker\":\"X\",\"name\":\"Name\",\"instrument\":\"STOCK\",\"shares\":10,\"price\":100,\"strike\":null,\"expiry\":null,\"total_cost\":1000,\"size_pct\":20,\"conviction\":\"HIGH\",\"rr\":\"3:1\",\"edge\":\"not priced in yet\",\"reason\":\"one sentence\"}],\"holdings_after\":[{\"ticker\":\"X\",\"name\":\"Name\",\"instrument\":\"STOCK\",\"shares\":10,\"boughtAt\":100,\"lastPrice\":100,\"strike\":null,\"expiry\":null,\"theme\":\"AI\"}],\"stop_limits\":[{\"ticker\":\"X\",\"order\":\"STOP_LOSS\",\"shares\":10,\"stop_price\":90,\"limit_price\":89,\"notes\":\"protect\"}],\"cash_after\":0,\"cash_reserved\":0,\"reserve_reason\":\"\",\"thesis\":\"3 sentences\",\"watching\":[\"SPY\"]}\n\nCRITICAL: valid JSON only. holdings_after=ALL positions. fetched_prices=every held ticker.";
 
@@ -222,7 +226,7 @@ async function makeDecision(holdings, cash, snapNum, priorStops, operatorCode, c
     : "None";
 
   const user = isFirst
-    ? "It's " + now + ". Deploy $" + cash.toFixed(2) + " into up to 6 positions. Search best opportunities. Set stops. Return JSON only."
+    ? "It's " + now + ". Deploy $" + Number(cash || 0).toFixed(2) + " into up to 6 positions. Search best opportunities. Set stops. Return JSON only."
     : "It's " + now + ". Portfolio:\n" + desc + "\n\nPrior stops:\n" + stopList + "\n\nSearch prices for: " + tickers.join(", ") + ". Check if stops crossed. Read news. Decide. Return JSON only.";
 
   let data = null;
