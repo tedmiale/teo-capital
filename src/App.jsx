@@ -704,12 +704,40 @@ function App() {
   }, [state && state.snapshots && state.snapshots.length]);
 
   // Persist state to server. Requires operator code.
+  // Strip anything that won't survive JSON.stringify (circular refs, DOM nodes, functions,
+  // Window/Element instances, etc). Returns a clean clone, and logs what was dropped to
+  // the console so we can debug if state ever picks up something weird.
+  const safeClone = function(obj) {
+    const seen = new WeakSet();
+    const dropped = [];
+    const replacer = function(key, value) {
+      if (value === window || (value && value.window === value)) {
+        dropped.push(key + " (Window)"); return undefined;
+      }
+      if (value instanceof Element || value instanceof Node) {
+        dropped.push(key + " (DOM)"); return undefined;
+      }
+      if (typeof value === "function") {
+        dropped.push(key + " (function)"); return undefined;
+      }
+      if (value && typeof value === "object") {
+        if (seen.has(value)) { dropped.push(key + " (circular)"); return undefined; }
+        seen.add(value);
+      }
+      return value;
+    };
+    const str = JSON.stringify(obj, replacer);
+    if (dropped.length) console.warn("safeClone dropped fields:", dropped);
+    return JSON.parse(str);
+  };
+
   // Throws on failure. Callers must handle the throw — don't update local state if save fails.
   const save = async function(next) {
+    const clean = safeClone(next);
     const r = await fetch("/api/save", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-operator-code": operatorCode || "" },
-      body: JSON.stringify({ state: next }),
+      body: JSON.stringify({ state: clean }),
     });
     if (!r.ok) {
       const t = await r.text().catch(() => "");
