@@ -908,8 +908,8 @@ function App() {
     </ThemeContext.Provider>
   );
 
-  var cfg = state.config || DEFAULT_CONFIG;
-  var seedAmt = cfg.seed;
+  var cfg = Object.assign({}, DEFAULT_CONFIG, state.config || {});
+  var seedAmt = Number.isFinite(cfg.seed) ? cfg.seed : DEFAULT_CONFIG.seed;
   var sprintName = cfg.sprintName || (cfg.weeks + "-Week Sprint");
   var latest = state.snapshots.length ? state.snapshots[state.snapshots.length-1] : null;
   var viewSnap = state.snapshots[snapIdx] || null;
@@ -1055,7 +1055,7 @@ function App() {
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:28,fontWeight:800,fontFamily:FS,color:isUp?C.green:C.red,lineHeight:1}}>{fmt(liveTotal)}</div>
-            <div style={{fontSize:12,color:isUp?C.green:C.red,marginTop:2}}>{fmtp(totalReturn)} on ${seedAmt.toLocaleString()}</div>
+            <div style={{fontSize:12,color:isUp?C.green:C.red,marginTop:2}}>{fmtp(totalReturn)} on ${Number(seedAmt || 0).toLocaleString()}</div>
             {state.holdings.length > 0 && (
               <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"flex-end",marginTop:6}}>
                 <button onClick={refreshPrices} disabled={refreshing} style={{background:"transparent",color:refreshing?C.muted:C.gold,border:"1px solid " + C.gold + "44",padding:"5px 10px",borderRadius:6,cursor:refreshing?"not-allowed":"pointer",fontSize:9,fontFamily:F,letterSpacing:1}}>
@@ -1333,7 +1333,7 @@ function App() {
               color:busy?C.muted:"#0a0800",border:"1px solid " + (busy?C.border:"transparent"),
               padding:"12px 28px",borderRadius:8,cursor:busy?"not-allowed":"pointer",
               fontSize:13,fontWeight:700,fontFamily:FS,letterSpacing:1,minWidth:240,
-            }}>{busy ? "Checking..." : isFirst ? ("DEPLOY $" + seedAmt.toLocaleString()) : "CHECK & DECIDE"}</button>
+            }}>{busy ? "Checking..." : isFirst ? ("DEPLOY $" + Number(seedAmt || 0).toLocaleString()) : "CHECK & DECIDE"}</button>
             <button onClick={doGrade} disabled={grading||!state.snapshots.length} style={{
               background:"transparent",color:grading?C.muted:C.gold,border:"1px solid " + C.gold + "44",
               padding:"12px 16px",borderRadius:8,cursor:grading||!state.snapshots.length?"not-allowed":"pointer",fontSize:11,fontFamily:F,
