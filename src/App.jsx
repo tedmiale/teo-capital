@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from "react";
+import React, { useState, useEffect, createContext, useContext } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 const _fl = document.createElement("link");
@@ -605,7 +605,46 @@ function ConfigForm({ initial, onDeploy }) {
 }
 
 
-export default function App() {
+// React Error Boundary — catches errors during rendering, mounting, or in lifecycle methods,
+// and shows them on screen instead of unmounting to a blank page.
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null, info: null }; }
+  static getDerivedStateFromError(err) { return { err: err }; }
+  componentDidCatch(err, info) { this.setState({ err: err, info: info }); console.error("Teo render error:", err, info); }
+  render() {
+    if (this.state.err) {
+      const stack = (this.state.info && this.state.info.componentStack) || "";
+      return (
+        <div style={{minHeight:"100vh",background:"#0a0a14",color:"#ff4d6d",fontFamily:"'JetBrains Mono',monospace",padding:24,overflow:"auto"}}>
+          <div style={{maxWidth:780,margin:"0 auto"}}>
+            <div style={{fontSize:14,fontWeight:700,letterSpacing:2,color:"#ff4d6d",marginBottom:12}}>{"\u26a0"} RENDER ERROR</div>
+            <div style={{fontSize:12,color:"#d4d4f0",marginBottom:18,lineHeight:1.6}}>Something in the dashboard crashed while rendering. Details below. The good news: this is now visible instead of a blank screen.</div>
+            <div style={{background:"#150808",border:"1px solid #ff4d6d33",borderRadius:8,padding:"14px 18px",marginBottom:12}}>
+              <div style={{fontSize:11,color:"#ff4d6d",fontWeight:700,marginBottom:6}}>Message</div>
+              <div style={{fontSize:12,color:"#d4d4f0",wordBreak:"break-word"}}>{String(this.state.err && this.state.err.message || this.state.err)}</div>
+            </div>
+            {stack && (
+              <div style={{background:"#0d0d1a",border:"1px solid #1e1e35",borderRadius:8,padding:"14px 18px",marginBottom:12}}>
+                <div style={{fontSize:11,color:"#5a5a8a",fontWeight:700,marginBottom:6}}>Where</div>
+                <pre style={{fontSize:10,color:"#9da5b4",whiteSpace:"pre-wrap",margin:0}}>{stack}</pre>
+              </div>
+            )}
+            <button onClick={() => window.location.reload()} style={{background:"#c9a84c",color:"#0a0800",border:"none",padding:"10px 20px",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>RELOAD</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+
+export default function AppWithBoundary() {
+  return <ErrorBoundary><App /></ErrorBoundary>;
+}
+
+
+function App() {
   const [theme, setTheme] = useState("dark");
   const C = THEMES[theme];
   const [state, setState] = useState(null);
@@ -665,18 +704,17 @@ export default function App() {
   }, [state && state.snapshots && state.snapshots.length]);
 
   // Persist state to server. Requires operator code.
+  // Throws on failure. Callers must handle the throw — don't update local state if save fails.
   const save = async function(next) {
-    try {
-      const r = await fetch("/api/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-operator-code": operatorCode || "" },
-        body: JSON.stringify({ state: next }),
-      });
-      if (!r.ok) {
-        const t = await r.text().catch(() => "");
-        throw new Error("Save failed: " + r.status + (t ? " " + t.slice(0,120) : ""));
-      }
-    } catch(e) { setError("Could not save: " + e.message); }
+    const r = await fetch("/api/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-operator-code": operatorCode || "" },
+      body: JSON.stringify({ state: next }),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error("Save failed: " + r.status + (t ? " " + t.slice(0,200) : ""));
+    }
   };
 
   const handleOpSubmit = function(code) {
