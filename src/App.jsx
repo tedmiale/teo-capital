@@ -2007,7 +2007,7 @@ function App() {
         {/* Bottom bar — operator only */}
         {isOperator ? (
           <div style={{position:"fixed",bottom:0,left:0,right:0,background:C.bg2 + "f2",backdropFilter:"blur(8px)",borderTop:"1px solid " + C.border,padding:"12px 20px",display:"flex",gap:8,alignItems:"center",justifyContent:"center",flexWrap:"wrap",zIndex:100}}>
-            <button onClick={doDecision} disabled={busy} style={{
+            <button onClick={function(){doDecision();}} disabled={busy} style={{
               background:busy?"transparent":"linear-gradient(135deg," + C.gold + "," + C.gold2 + ")",
               color:busy?C.muted:"#0a0800",border:"1px solid " + (busy?C.border:"transparent"),
               padding:"12px 28px",borderRadius:8,cursor:busy?"not-allowed":"pointer",
