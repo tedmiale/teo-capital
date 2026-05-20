@@ -987,7 +987,7 @@ function TeoCharacter({ pose }) {
 
   return (
     <img
-      src={"/character/teo-" + pose + ".png"}
+      src={"/teo-" + pose + ".png"}
       alt={phase.text}
       onError={function(){ setErrored(true); }}
       style={{width:220,height:220,objectFit:"contain",display:"block"}}
