@@ -746,30 +746,99 @@ function HistoryView({ archive, loading, isOperator, expandedIdx, setExpandedIdx
         const cfg = sp.config || {};
         const expanded = expandedIdx === i;
         const seed = cfg.seed || 5000;
-        const startDate = sp.snapshots && sp.snapshots.length ? sp.snapshots[0].timestamp : "";
-        const endDate = sp.archivedAt ? new Date(sp.archivedAt).toLocaleDateString() : "";
         const numDecisions = (sp.snapshots && sp.snapshots.length) || 0;
+        const lastSnap = numDecisions ? sp.snapshots[sp.snapshots.length - 1] : null;
+
+        // Duration in days. Estimated from first decision to archivedAt (or last decision).
+        const firstSnap = numDecisions ? sp.snapshots[0] : null;
+        let durationDays = null;
+        try {
+          if (firstSnap && firstSnap.timestamp) {
+            const startMs = new Date(firstSnap.timestamp).getTime();
+            const endMs = sp.archivedAt ? new Date(sp.archivedAt).getTime()
+                       : (lastSnap && lastSnap.timestamp ? new Date(lastSnap.timestamp).getTime() : null);
+            if (startMs && endMs && endMs > startMs) {
+              durationDays = Math.max(1, Math.round((endMs - startMs) / (1000 * 60 * 60 * 24)));
+            }
+          }
+        } catch(e) {}
+
+        // Focus chip labels for display
+        const focusLabels = (cfg.focusIds || []).map(function(id) {
+          const c = FOCUS_CHIPS.find(function(x){ return x.id === id; });
+          return c ? c.label : id;
+        });
+
+        // Ending composition
+        const endHoldings = (sp.holdings || []);
+        const endCash = sp.cash || 0;
+        const positionCount = endHoldings.length;
+
+        // Best / worst position by % gain from entry to last known price
+        let bestPos = null, worstPos = null;
+        endHoldings.forEach(function(h) {
+          const last = h.lastPrice != null ? h.lastPrice : h.boughtAt;
+          if (!h.boughtAt) return;
+          const pct = ((last - h.boughtAt) / h.boughtAt) * 100;
+          if (!Number.isFinite(pct)) return;
+          if (bestPos == null || pct > bestPos.pct) bestPos = { ticker: h.ticker, pct: pct };
+          if (worstPos == null || pct < worstPos.pct) worstPos = { ticker: h.ticker, pct: pct };
+        });
+        const winningPositions = endHoldings.filter(function(h) {
+          const last = h.lastPrice != null ? h.lastPrice : h.boughtAt;
+          return h.boughtAt && last > h.boughtAt;
+        }).length;
+
+        // Total stops triggered across the sprint
+        let stopsTriggered = 0;
+        (sp.snapshots || []).forEach(function(s) {
+          if (s.triggeredStops && s.triggeredStops.length) stopsTriggered += s.triggeredStops.length;
+        });
+
+        // Average cash deployment ratio (1 - cash/total) over all snapshots
+        let avgDeployed = null;
+        if (numDecisions > 0) {
+          const ratios = sp.snapshots.map(function(s) {
+            if (!s.totalValue || s.totalValue <= 0) return null;
+            const cashAtSnap = s.cashAfter != null ? s.cashAfter : 0;
+            return Math.max(0, Math.min(1, 1 - (cashAtSnap / s.totalValue)));
+          }).filter(function(x){ return x != null; });
+          if (ratios.length) avgDeployed = (ratios.reduce(function(s,x){return s+x;}, 0) / ratios.length) * 100;
+        }
 
         return (
           <div key={i} style={{background:C.bg2,border:"1px solid " + (r.teoReturn>=0?C.green+"33":C.red+"33"),borderRadius:10,padding:"14px 18px",marginBottom:10}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,flexWrap:"wrap",cursor:"pointer"}} onClick={function(){ setExpandedIdx(expanded ? null : i); }}>
-              <div style={{flex:"1 1 200px"}}>
-                <div style={{fontSize:13,fontWeight:700,fontFamily:FS,color:C.text,marginBottom:2}}>{cfg.sprintName || "Untitled Sprint"}</div>
-                <div style={{fontSize:9,color:C.muted,letterSpacing:.5}}>
-                  ${Number(seed).toLocaleString()} {"\u00b7"} {cfg.weeks || "?"}wk {"\u00b7"} {cfg.risk || "—"} {"\u00b7"} {numDecisions} decision{numDecisions===1?"":"s"}
+              <div style={{flex:"1 1 220px"}}>
+                <div style={{fontSize:13,fontWeight:700,fontFamily:FS,color:C.text,marginBottom:3}}>{cfg.sprintName || "Untitled Sprint"}</div>
+                <div style={{fontSize:9,color:C.muted,letterSpacing:.4,marginBottom:2}}>
+                  ${Number(seed).toLocaleString()} seed {"\u00b7"} {cfg.weeks || "?"}-week target {"\u00b7"} {cfg.risk || "—"}
                 </div>
-                {endDate && <div style={{fontSize:9,color:C.dim,marginTop:2}}>ended {endDate}</div>}
+                <div style={{fontSize:9,color:C.muted,letterSpacing:.4}}>
+                  {durationDays != null ? ("Ran " + durationDays + " day" + (durationDays===1?"":"s")) : "Duration unknown"}
+                  {" \u00b7 "}
+                  {numDecisions} decision{numDecisions===1?"":"s"}
+                  {durationDays && numDecisions ? " (" + (numDecisions / durationDays).toFixed(1) + "/day)" : ""}
+                </div>
+                {focusLabels.length > 0 && (
+                  <div style={{display:"flex",gap:4,marginTop:5,flexWrap:"wrap"}}>
+                    {focusLabels.map(function(label, j) {
+                      return <span key={j} style={{fontSize:8,color:C.gold,background:C.gold+"15",border:"1px solid " + C.gold + "33",borderRadius:10,padding:"2px 7px",letterSpacing:.3}}>{label}</span>;
+                    })}
+                  </div>
+                )}
               </div>
               <div style={{textAlign:"right"}}>
-                <div style={{fontSize:18,fontWeight:700,fontFamily:FS,color:r.teoReturn>=0?C.green:C.red,lineHeight:1}}>
+                <div style={{fontSize:20,fontWeight:700,fontFamily:FS,color:r.teoReturn>=0?C.green:C.red,lineHeight:1}}>
                   {(r.teoReturn>=0?"+":"") + r.teoReturn.toFixed(2) + "%"}
                 </div>
                 <div style={{fontSize:9,color:C.muted,marginTop:3}}>{fmt(sp.totalValue)}</div>
+                <div style={{fontSize:8,color:C.dim,marginTop:6,letterSpacing:1}}>{expanded ? "\u25b2 collapse" : "\u25bc expand"}</div>
               </div>
             </div>
 
             {/* Benchmark comparison row */}
-            <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap"}}>
+            <div style={{display:"flex",gap:6,marginTop:12,flexWrap:"wrap"}}>
               {BENCHMARK_TICKERS.map(function(t) {
                 const br = r.benchReturns[t];
                 const teoBeatBench = br != null && r.teoReturn > br;
@@ -786,6 +855,52 @@ function HistoryView({ archive, loading, isOperator, expandedIdx, setExpandedIdx
                   </div>
                 );
               })}
+            </div>
+
+            {/* Sprint stats grid */}
+            <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+              <div style={{flex:"1 1 80px",background:C.bg3,border:"1px solid " + C.border,borderRadius:6,padding:"6px 10px"}}>
+                <div style={{fontSize:8,letterSpacing:1,color:C.muted}}>ENDED WITH</div>
+                <div style={{fontSize:11,fontWeight:700,fontFamily:FS,color:C.text}}>
+                  {positionCount} pos {endCash > 0 ? "+ " + fmt(endCash) : ""}
+                </div>
+              </div>
+              {bestPos && (
+                <div style={{flex:"1 1 80px",background:C.bg3,border:"1px solid " + C.border,borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:8,letterSpacing:1,color:C.muted}}>BEST</div>
+                  <div style={{fontSize:11,fontWeight:700,fontFamily:FS,color:bestPos.pct>=0?C.green:C.red}}>
+                    {bestPos.ticker} {(bestPos.pct>=0?"+":"") + bestPos.pct.toFixed(1) + "%"}
+                  </div>
+                </div>
+              )}
+              {worstPos && worstPos.ticker !== (bestPos && bestPos.ticker) && (
+                <div style={{flex:"1 1 80px",background:C.bg3,border:"1px solid " + C.border,borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:8,letterSpacing:1,color:C.muted}}>WORST</div>
+                  <div style={{fontSize:11,fontWeight:700,fontFamily:FS,color:worstPos.pct>=0?C.green:C.red}}>
+                    {worstPos.ticker} {(worstPos.pct>=0?"+":"") + worstPos.pct.toFixed(1) + "%"}
+                  </div>
+                </div>
+              )}
+              {positionCount > 0 && (
+                <div style={{flex:"1 1 80px",background:C.bg3,border:"1px solid " + C.border,borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:8,letterSpacing:1,color:C.muted}}>WIN RATE</div>
+                  <div style={{fontSize:11,fontWeight:700,fontFamily:FS,color:C.text}}>
+                    {winningPositions}/{positionCount} <span style={{fontSize:9,color:C.muted,fontWeight:400}}>({Math.round(winningPositions/positionCount*100)}%)</span>
+                  </div>
+                </div>
+              )}
+              {stopsTriggered > 0 && (
+                <div style={{flex:"1 1 80px",background:C.bg3,border:"1px solid " + C.border,borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:8,letterSpacing:1,color:C.muted}}>STOPS HIT</div>
+                  <div style={{fontSize:11,fontWeight:700,fontFamily:FS,color:C.orange}}>{stopsTriggered}</div>
+                </div>
+              )}
+              {avgDeployed != null && (
+                <div style={{flex:"1 1 80px",background:C.bg3,border:"1px solid " + C.border,borderRadius:6,padding:"6px 10px"}}>
+                  <div style={{fontSize:8,letterSpacing:1,color:C.muted}}>AVG DEPLOYED</div>
+                  <div style={{fontSize:11,fontWeight:700,fontFamily:FS,color:C.text}}>{avgDeployed.toFixed(0)}%</div>
+                </div>
+              )}
             </div>
 
             {/* Expanded detail */}
@@ -840,6 +955,196 @@ function HistoryView({ archive, loading, isOperator, expandedIdx, setExpandedIdx
         </div>
       )}
     </div>
+  );
+}
+
+
+// ── TEO CHARACTER ─────────────────────────────────────────────────────────
+// Middle-aged Southern Italian guy with a slight receding hairline. One base figure,
+// five poses for different stages of the model's deliberation. Used on the thinking
+// screen so the wait feels productive instead of stalled.
+
+const TEO_PHASES = [
+  { pose: "reading",    text: "Reading the market news…" },
+  { pose: "charting",   text: "Reviewing price action…" },
+  { pose: "thinking",   text: "Weighing the positions…" },
+  { pose: "calculating",text: "Sizing the trades…" },
+  { pose: "writing",    text: "Drafting the thesis…" },
+];
+
+function TeoCharacter({ pose }) {
+  const C = useC();
+  const skin = "#d4a87a";        // olive Mediterranean
+  const skinShade = "#a87d4f";
+  const hair = "#1f1410";        // dark brown / near-black
+  const hairGray = "#5a4a3e";    // slight grey at temples
+  const shirt = theme => theme === "light" ? "#2c3e50" : "#1e1e35";
+
+  // Reused base: head, hair, face, neck, shoulders. Rendered the same in every pose.
+  const Base = () => (
+    <g>
+      {/* Shoulders / shirt */}
+      <path d="M 28 200 Q 28 138 100 138 Q 172 138 172 200 Z" fill={C.bg2 === "#ffffff" ? "#2c3e50" : "#1e1e35"}/>
+      {/* Collar suggestion */}
+      <path d="M 88 138 L 100 152 L 112 138" stroke={C.muted} strokeWidth="1.2" fill="none" opacity="0.6"/>
+      {/* Neck */}
+      <rect x="88" y="120" width="24" height="22" fill={skin}/>
+      <line x1="88" y1="138" x2="88" y2="142" stroke={skinShade} strokeWidth="0.6"/>
+      {/* Head */}
+      <ellipse cx="100" cy="80" rx="36" ry="42" fill={skin}/>
+      {/* Slight jaw shadow */}
+      <path d="M 70 100 Q 100 130 130 100" stroke={skinShade} strokeWidth="0.5" fill="none" opacity="0.5"/>
+
+      {/* Hair: receding M-shape — two separate tufts at temples with bare patch in middle */}
+      <path d="M 64 62
+               Q 60 44 80 42
+               Q 92 42 96 56
+               L 96 62
+               Q 90 58 82 60
+               Q 72 62 66 70
+               Q 62 70 64 62 Z" fill={hair}/>
+      <path d="M 136 62
+               Q 140 44 120 42
+               Q 108 42 104 56
+               L 104 62
+               Q 110 58 118 60
+               Q 128 62 134 70
+               Q 138 70 136 62 Z" fill={hair}/>
+      {/* Grey at temples */}
+      <path d="M 64 64 Q 62 56 68 54" stroke={hairGray} strokeWidth="2" fill="none" opacity="0.6"/>
+      <path d="M 136 64 Q 138 56 132 54" stroke={hairGray} strokeWidth="2" fill="none" opacity="0.6"/>
+      {/* Back of hair behind head */}
+      <path d="M 64 64 Q 60 90 70 110 L 76 110 Q 70 94 72 70 Z" fill={hair}/>
+      <path d="M 136 64 Q 140 90 130 110 L 124 110 Q 130 94 128 70 Z" fill={hair}/>
+
+      {/* Strong dark eyebrows */}
+      <path d="M 76 76 Q 82 73 90 76" stroke={hair} strokeWidth="3" strokeLinecap="round" fill="none"/>
+      <path d="M 124 76 Q 118 73 110 76" stroke={hair} strokeWidth="3" strokeLinecap="round" fill="none"/>
+
+      {/* Eyes — small filled ovals */}
+      <ellipse cx="84" cy="85" rx="2.2" ry="2.6" fill={hair}/>
+      <ellipse cx="116" cy="85" rx="2.2" ry="2.6" fill={hair}/>
+
+      {/* Classical nose — bridge + nostrils */}
+      <path d="M 100 88 Q 96 105 99 112 Q 100 114 101 114 Q 102 114 101 112 Q 104 105 100 88" fill="none" stroke={skinShade} strokeWidth="1.2" strokeLinecap="round"/>
+
+      {/* Mouth — slight closed smile */}
+      <path d="M 90 122 Q 100 126 110 122" stroke={hair} strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+
+      {/* Light stubble — dotted texture along jaw/chin */}
+      {[
+        [82,118],[88,124],[94,127],[100,128],[106,127],[112,124],[118,118],
+        [84,114],[92,121],[100,123],[108,121],[116,114],
+      ].map(function(p, i){ return <circle key={i} cx={p[0]} cy={p[1]} r="0.6" fill={hair} opacity="0.45"/>; })}
+
+      {/* Ears */}
+      <ellipse cx="64" cy="85" rx="4" ry="6" fill={skin}/>
+      <ellipse cx="136" cy="85" rx="4" ry="6" fill={skin}/>
+    </g>
+  );
+
+  // Pose-specific accessories layered on top of the base.
+  const Accessory = function() {
+    if (pose === "reading") {
+      return (
+        <g>
+          {/* Tablet held in front, slightly tilted */}
+          <rect x="40" y="158" width="120" height="40" rx="4" fill={C.bg3} stroke={C.gold} strokeWidth="1.5"/>
+          <line x1="50" y1="170" x2="100" y2="170" stroke={C.gold} strokeWidth="1" opacity="0.8"/>
+          <line x1="50" y1="176" x2="120" y2="176" stroke={C.muted} strokeWidth="0.8" opacity="0.7"/>
+          <line x1="50" y1="182" x2="110" y2="182" stroke={C.muted} strokeWidth="0.8" opacity="0.7"/>
+          <line x1="50" y1="188" x2="135" y2="188" stroke={C.muted} strokeWidth="0.8" opacity="0.7"/>
+          {/* Eyes shifted down slightly when reading */}
+          <ellipse cx="84" cy="87" rx="2.2" ry="2.2" fill={C.bg}/>
+          <ellipse cx="116" cy="87" rx="2.2" ry="2.2" fill={C.bg}/>
+          <ellipse cx="84" cy="88" rx="2.2" ry="2.6" fill={hair}/>
+          <ellipse cx="116" cy="88" rx="2.2" ry="2.6" fill={hair}/>
+        </g>
+      );
+    }
+    if (pose === "charting") {
+      return (
+        <g>
+          {/* Chart panel floating to the right */}
+          <rect x="142" y="40" width="52" height="40" rx="3" fill={C.bg3} stroke={C.border} strokeWidth="1"/>
+          <polyline points="146,72 154,60 162,66 170,52 178,58 186,46 190,50" stroke={C.green} strokeWidth="1.5" fill="none"/>
+          <line x1="146" y1="76" x2="190" y2="76" stroke={C.muted} strokeWidth="0.5" opacity="0.4"/>
+          {/* Up arrow on chart */}
+          <polygon points="190,48 194,52 186,52" fill={C.green}/>
+          {/* Eyes looking right */}
+          <ellipse cx="86" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
+          <ellipse cx="118" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
+          <ellipse cx="87" cy="85" rx="2" ry="2.4" fill={hair}/>
+          <ellipse cx="119" cy="85" rx="2" ry="2.4" fill={hair}/>
+        </g>
+      );
+    }
+    if (pose === "thinking") {
+      return (
+        <g>
+          {/* Thought bubble above head */}
+          <ellipse cx="155" cy="35" rx="28" ry="18" fill={C.bg2} stroke={C.gold} strokeWidth="1.5"/>
+          <circle cx="138" cy="58" r="4" fill={C.bg2} stroke={C.gold} strokeWidth="1.2"/>
+          <circle cx="132" cy="68" r="2.5" fill={C.bg2} stroke={C.gold} strokeWidth="1"/>
+          <text x="155" y="40" textAnchor="middle" fill={C.gold} fontSize="13" fontWeight="700" fontFamily="serif">?</text>
+          {/* Hand on chin */}
+          <ellipse cx="100" cy="138" rx="14" ry="10" fill={skin}/>
+          <path d="M 96 132 Q 100 128 104 132" stroke={skinShade} strokeWidth="0.8" fill="none"/>
+          {/* Eyes looking up */}
+          <ellipse cx="84" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
+          <ellipse cx="116" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
+          <ellipse cx="84" cy="83" rx="2" ry="2.4" fill={hair}/>
+          <ellipse cx="116" cy="83" rx="2" ry="2.4" fill={hair}/>
+        </g>
+      );
+    }
+    if (pose === "calculating") {
+      return (
+        <g>
+          {/* Spreadsheet/numbers in front */}
+          <rect x="44" y="160" width="112" height="38" rx="3" fill={C.bg3} stroke={C.border} strokeWidth="1"/>
+          {[[52,170,"$"],[80,170,"%"],[108,170,"#"],[136,170,"="]].map(function(t,i){
+            return <text key={i} x={t[0]} y={t[1]} fill={C.gold} fontSize="9" fontFamily="monospace" fontWeight="700">{t[2]}</text>;
+          })}
+          <line x1="52" y1="178" x2="148" y2="178" stroke={C.border} strokeWidth="0.5"/>
+          {[[52,188,"NVDA"],[88,188,"+12%"],[124,188,"BUY"]].map(function(t,i){
+            return <text key={i} x={t[0]} y={t[1]} fill={i===1?C.green:C.muted} fontSize="7" fontFamily="monospace">{t[2]}</text>;
+          })}
+          {/* Eyes down */}
+          <ellipse cx="84" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
+          <ellipse cx="116" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
+          <ellipse cx="84" cy="88" rx="2" ry="2.4" fill={hair}/>
+          <ellipse cx="116" cy="88" rx="2" ry="2.4" fill={hair}/>
+        </g>
+      );
+    }
+    if (pose === "writing") {
+      return (
+        <g>
+          {/* Notebook */}
+          <rect x="40" y="166" width="120" height="34" rx="2" fill={C.bg3} stroke={C.border} strokeWidth="1"/>
+          <line x1="50" y1="174" x2="120" y2="174" stroke={C.muted} strokeWidth="0.8" opacity="0.6"/>
+          <line x1="50" y1="182" x2="140" y2="182" stroke={C.muted} strokeWidth="0.8" opacity="0.6"/>
+          <line x1="50" y1="190" x2="100" y2="190" stroke={C.muted} strokeWidth="0.8" opacity="0.6"/>
+          {/* Pen */}
+          <rect x="138" y="156" width="3" height="24" fill={C.gold} transform="rotate(20 140 168)"/>
+          <polygon points="145,178 148,184 142,182" fill={hair} transform="rotate(20 140 168)"/>
+          {/* Eyes down focused */}
+          <ellipse cx="84" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
+          <ellipse cx="116" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
+          <ellipse cx="84" cy="89" rx="2" ry="2.4" fill={hair}/>
+          <ellipse cx="116" cy="89" rx="2" ry="2.4" fill={hair}/>
+        </g>
+      );
+    }
+    return null;
+  };
+
+  return (
+    <svg viewBox="0 0 200 200" width="180" height="180" xmlns="http://www.w3.org/2000/svg" style={{display:"block"}}>
+      <Base />
+      <Accessory />
+    </svg>
   );
 }
 
@@ -928,6 +1233,17 @@ function App() {
   const [expandedSprintIdx, setExpandedSprintIdx] = useState(null);
   const [showWipeConfirm, setShowWipeConfirm] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [teoPhaseIdx, setTeoPhaseIdx] = useState(0);
+
+  // Rotate through Teo's "thinking phases" while busy, so the loading screen
+  // tells a small visual story instead of sitting on one image.
+  useEffect(function() {
+    if (!busy) { setTeoPhaseIdx(0); return; }
+    const id = setInterval(function() {
+      setTeoPhaseIdx(function(i) { return (i + 1) % TEO_PHASES.length; });
+    }, 3500);
+    return function() { clearInterval(id); };
+  }, [busy]);
 
   // Restore theme choice from device on mount.
   useEffect(function() {
@@ -1310,7 +1626,8 @@ function App() {
         <div style={{background:C.bg,minHeight:"100vh",padding:"24px 16px 60px",fontFamily:F}}>
           <div style={{maxWidth:archive.sprints.length>0?700:480,width:"100%",margin:"0 auto"}} className="fu">
             <div style={{textAlign:"center",marginBottom:28}}>
-              <div style={{fontSize:10,letterSpacing:5,color:C.gold,marginBottom:10}}>{"\u25c8"} TEO CAPITAL {"\u25c8"}</div>
+              <div style={{fontSize:10,letterSpacing:5,color:C.gold,marginBottom:4}}>{"\u25c8"} TEO CAPITAL {"\u25c8"}</div>
+              <div style={{fontSize:9,letterSpacing:3,color:C.textdim,marginBottom:10,fontStyle:"italic"}}>Thinks. Evaluates. Orders.</div>
               <div style={{fontSize:34,fontWeight:800,fontFamily:FS,color:C.text,lineHeight:1.1,marginBottom:10}}>{archive.sprints.length>0 ? "Between Sprints" : "New Sprint"}</div>
               <div style={{fontSize:12,color:C.textdim,lineHeight:1.9,marginTop:8}}>Elite AI trader. Real prices. Risk-managed framework.</div>
             </div>
@@ -1360,16 +1677,25 @@ function App() {
   );
 
   /* ── LOADING ── */
-  if (busy) return (
-    <ThemeContext.Provider value={C}>
-      <div style={{background:C.bg,minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:F,gap:18}}>
-        <div style={{fontSize:36}}>{"\u26a1"}</div>
-        <div style={{fontSize:14,fontWeight:700,fontFamily:FS,color:C.text}}>{isFirst ? "Deploying capital..." : "Checking markets..."}</div>
-        <div style={{fontSize:11,color:C.textdim,textAlign:"center",lineHeight:1.9}}>Searching prices {"\u00b7"} Reading news {"\u00b7"} Analyzing correlations</div>
-        <div style={{display:"flex",gap:6}}>{[0,1,2].map(function(i){return <div key={i} style={{width:8,height:8,borderRadius:"50%",background:C.gold,animation:"pulse 1.5s ease " + (i*0.3) + "s infinite"}} />;})}</div>
-      </div>
-    </ThemeContext.Provider>
-  );
+  if (busy) {
+    const phase = TEO_PHASES[teoPhaseIdx % TEO_PHASES.length];
+    return (
+      <ThemeContext.Provider value={C}>
+        <div style={{background:C.bg,minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:F,gap:14,padding:20}}>
+          <div className="fu" key={phase.pose}>
+            <TeoCharacter pose={phase.pose} />
+          </div>
+          <div style={{fontSize:14,fontWeight:700,fontFamily:FS,color:C.text,textAlign:"center"}} key={"label-"+phase.pose} className="fu">{phase.text}</div>
+          <div style={{fontSize:10,color:C.muted,textAlign:"center",maxWidth:280,lineHeight:1.7}}>This usually takes 60–120 seconds. Web search is doing real work.</div>
+          <div style={{display:"flex",gap:5,marginTop:4}}>
+            {TEO_PHASES.map(function(_, i){
+              return <div key={i} style={{width:6,height:6,borderRadius:"50%",background:i===teoPhaseIdx%TEO_PHASES.length?C.gold:C.dim,transition:"background .3s"}}/>;
+            })}
+          </div>
+        </div>
+      </ThemeContext.Provider>
+    );
+  }
 
   /* ── MAIN DASHBOARD ── */
   return (
@@ -1385,7 +1711,8 @@ function App() {
         {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14,flexWrap:"wrap",gap:10}}>
           <div>
-            <div style={{fontSize:9,letterSpacing:4,color:C.gold,marginBottom:3}}>{"\u25c8"} TEO CAPITAL {"\u00b7"} {sprintName.toUpperCase()}</div>
+            <div style={{fontSize:9,letterSpacing:4,color:C.gold,marginBottom:1}}>{"\u25c8"} TEO CAPITAL {"\u00b7"} {sprintName.toUpperCase()}</div>
+            <div style={{fontSize:8,letterSpacing:2,color:C.textdim,marginBottom:3,fontStyle:"italic"}}>Thinks. Evaluates. Orders.</div>
             <div style={{fontSize:9,color:C.muted}}>{state.snapshots.length} decision{state.snapshots.length!==1?"s":""} {"\u00b7"} {cfg.weeks}-week target {latest ? " \u00b7 last decided " + latest.timestamp : ""}</div>
             <div style={{fontSize:9,color:isOperator?C.green:C.muted,marginTop:4,cursor:"pointer"}} onClick={function(){ if(isOperator){ if(confirm("Log out of operator mode on this device?")) handleOpLogout(); } else { setShowOpLogin(true); } }}>
               {isOperator ? "\u25cf OPERATOR \u00b7 click to log out" : "\u25cb viewer mode \u00b7 click to operate"}
