@@ -96,23 +96,21 @@ const GRADE_SCHEMA = {
 };
 
 
-// Strip anything that won't survive JSON.stringify (circular refs, DOM nodes, functions,
-// Window/Element instances). Returns a clean clone. Logs to console what was dropped.
+// Strip anything that won't survive JSON.stringify (DOM nodes, functions,
+// Window/Element instances). Real circular refs will throw — that's a bug to
+// fix at the source, not silently mangle. We don't have any in our state shape.
+//
+// Earlier versions of this used a WeakSet to "detect circular references" but
+// that incorrectly flagged any object referenced from two locations in the tree
+// as circular, silently dropping legitimate fields. Removed.
 function safeClone(obj) {
-  const seen = new WeakSet();
   const dropped = [];
   const replacer = function(key, value) {
-    if (typeof window !== "undefined" && (value === window || (value && value.window === value))) {
-      dropped.push(key + " (Window)"); return undefined;
-    }
+    if (typeof window !== "undefined" && value === window) { dropped.push(key + " (Window)"); return undefined; }
     if (typeof Element !== "undefined" && value instanceof Element) { dropped.push(key + " (Element)"); return undefined; }
     if (typeof Node !== "undefined" && value instanceof Node) { dropped.push(key + " (Node)"); return undefined; }
     if (typeof Event !== "undefined" && value instanceof Event) { dropped.push(key + " (Event)"); return undefined; }
     if (typeof value === "function") { dropped.push(key + " (function)"); return undefined; }
-    if (value && typeof value === "object") {
-      if (seen.has(value)) { dropped.push(key + " (circular)"); return undefined; }
-      seen.add(value);
-    }
     return value;
   };
   const str = JSON.stringify(obj, replacer);
@@ -507,6 +505,33 @@ const BENCHMARK_OPTIONS = [
   { id: "QQQ", label: "QQQ", desc: "Nasdaq 100" },
 ];
 
+// Tickers we always track, regardless of which is the operator's primary pick.
+// Allows the Track Record view to compare against all three indexes for every sprint.
+const BENCHMARK_TICKERS = ["VTI", "SPY", "QQQ"];
+
+// Read a snapshot's benchmark price for a given ticker, with legacy fallback for
+// snapshots saved before multi-benchmark tracking existed.
+function snapBenchPx(snap, ticker, configBenchmark) {
+  if (snap && snap.benchmarkPrices && typeof snap.benchmarkPrices[ticker] === "number") {
+    return snap.benchmarkPrices[ticker];
+  }
+  if (snap && typeof snap.benchmarkPrice === "number" && configBenchmark === ticker) {
+    return snap.benchmarkPrice;
+  }
+  return null;
+}
+
+// Read a config's starting benchmark price for a given ticker, with legacy fallback.
+function configBenchStart(config, ticker) {
+  if (config && config.benchmarkStarts && typeof config.benchmarkStarts[ticker] === "number") {
+    return config.benchmarkStarts[ticker];
+  }
+  if (config && typeof config.benchmarkStart === "number" && config.benchmark === ticker) {
+    return config.benchmarkStart;
+  }
+  return null;
+}
+
 const DEFAULT_CONFIG = {
   sprintName: "4-Week Sprint",
   seed: 5000,
@@ -629,6 +654,220 @@ function ConfigForm({ initial, onDeploy }) {
 }
 
 
+// HistoryView — public track record showing all archived sprints and their performance
+// vs all three benchmarks (VTI, SPY, QQQ). Operators get a "Clear all history" button at bottom.
+function HistoryView({ archive, loading, isOperator, expandedIdx, setExpandedIdx, onClearRequest }) {
+  const C = useC();
+
+  const sprints = (archive && archive.sprints) || [];
+
+  if (loading) {
+    return (
+      <div style={{textAlign:"center",padding:"40px 20px",color:C.muted,fontSize:12,fontFamily:F}}>
+        Loading sprint history...
+      </div>
+    );
+  }
+
+  if (!sprints.length) {
+    return (
+      <div style={{textAlign:"center",padding:"40px 20px",fontFamily:F}}>
+        <div style={{fontSize:32,marginBottom:14}}>{"\ud83d\udcd6"}</div>
+        <div style={{fontSize:14,fontWeight:700,fontFamily:FS,color:C.text,marginBottom:8}}>No history yet</div>
+        <div style={{fontSize:11,color:C.muted,lineHeight:1.8,maxWidth:340,margin:"0 auto"}}>
+          When a sprint ends (via RESET), it'll be archived here with full performance vs each benchmark. Run a few sprints and Teo's track record starts to tell a story.
+        </div>
+      </div>
+    );
+  }
+
+  // Compute summary stats across all sprints.
+  const sprintReturns = sprints.map(function(sp) {
+    const seed = (sp.config && sp.config.seed) || 5000;
+    const teoReturn = ((sp.totalValue / seed) - 1) * 100;
+    const benchReturns = {};
+    BENCHMARK_TICKERS.forEach(function(t) {
+      const start = configBenchStart(sp.config, t);
+      const lastSnap = sp.snapshots && sp.snapshots.length ? sp.snapshots[sp.snapshots.length - 1] : null;
+      const end = lastSnap ? snapBenchPx(lastSnap, t, sp.config && sp.config.benchmark) : null;
+      if (start != null && end != null) {
+        benchReturns[t] = ((end / start) - 1) * 100;
+      } else {
+        benchReturns[t] = null;
+      }
+    });
+    return { sprint: sp, teoReturn: teoReturn, benchReturns: benchReturns };
+  });
+
+  const avgReturn = sprintReturns.reduce(function(s, r) { return s + r.teoReturn; }, 0) / sprintReturns.length;
+  const winRates = {};
+  BENCHMARK_TICKERS.forEach(function(t) {
+    const eligible = sprintReturns.filter(function(r) { return r.benchReturns[t] != null; });
+    const wins = eligible.filter(function(r) { return r.teoReturn > r.benchReturns[t]; }).length;
+    winRates[t] = eligible.length ? { wins: wins, total: eligible.length, pct: (wins / eligible.length) * 100 } : null;
+  });
+
+  return (
+    <div className="fu">
+      {/* Summary strip */}
+      <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:10,padding:"14px 18px",marginBottom:14}}>
+        <div style={{fontSize:9,letterSpacing:3,color:C.gold,marginBottom:10}}>{"\u25c8"} TRACK RECORD</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:18,marginBottom:6}}>
+          <div>
+            <div style={{fontSize:8,letterSpacing:2,color:C.muted,marginBottom:3}}>SPRINTS</div>
+            <div style={{fontSize:20,fontWeight:700,fontFamily:FS,color:C.text}}>{sprints.length}</div>
+          </div>
+          <div>
+            <div style={{fontSize:8,letterSpacing:2,color:C.muted,marginBottom:3}}>AVG RETURN</div>
+            <div style={{fontSize:20,fontWeight:700,fontFamily:FS,color:avgReturn>=0?C.green:C.red}}>{(avgReturn>=0?"+":"") + avgReturn.toFixed(2) + "%"}</div>
+          </div>
+          {BENCHMARK_TICKERS.map(function(t) {
+            const wr = winRates[t];
+            return (
+              <div key={t}>
+                <div style={{fontSize:8,letterSpacing:2,color:C.muted,marginBottom:3}}>vs {t}</div>
+                {wr ? (
+                  <div style={{fontSize:14,fontWeight:700,fontFamily:FS,color:wr.pct>=50?C.green:C.red}}>
+                    {wr.wins}/{wr.total} <span style={{fontSize:10,color:C.muted,fontWeight:400}}>({wr.pct.toFixed(0)}%)</span>
+                  </div>
+                ) : (
+                  <div style={{fontSize:14,color:C.dim,fontStyle:"italic"}}>—</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Per-sprint cards */}
+      {sprintReturns.slice().reverse().map(function(r, revIdx) {
+        const i = sprintReturns.length - 1 - revIdx; // original index in sprintReturns
+        const sp = r.sprint;
+        const cfg = sp.config || {};
+        const expanded = expandedIdx === i;
+        const seed = cfg.seed || 5000;
+        const startDate = sp.snapshots && sp.snapshots.length ? sp.snapshots[0].timestamp : "";
+        const endDate = sp.archivedAt ? new Date(sp.archivedAt).toLocaleDateString() : "";
+        const numDecisions = (sp.snapshots && sp.snapshots.length) || 0;
+
+        return (
+          <div key={i} style={{background:C.bg2,border:"1px solid " + (r.teoReturn>=0?C.green+"33":C.red+"33"),borderRadius:10,padding:"14px 18px",marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,flexWrap:"wrap",cursor:"pointer"}} onClick={function(){ setExpandedIdx(expanded ? null : i); }}>
+              <div style={{flex:"1 1 200px"}}>
+                <div style={{fontSize:13,fontWeight:700,fontFamily:FS,color:C.text,marginBottom:2}}>{cfg.sprintName || "Untitled Sprint"}</div>
+                <div style={{fontSize:9,color:C.muted,letterSpacing:.5}}>
+                  ${Number(seed).toLocaleString()} {"\u00b7"} {cfg.weeks || "?"}wk {"\u00b7"} {cfg.risk || "—"} {"\u00b7"} {numDecisions} decision{numDecisions===1?"":"s"}
+                </div>
+                {endDate && <div style={{fontSize:9,color:C.dim,marginTop:2}}>ended {endDate}</div>}
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:18,fontWeight:700,fontFamily:FS,color:r.teoReturn>=0?C.green:C.red,lineHeight:1}}>
+                  {(r.teoReturn>=0?"+":"") + r.teoReturn.toFixed(2) + "%"}
+                </div>
+                <div style={{fontSize:9,color:C.muted,marginTop:3}}>{fmt(sp.totalValue)}</div>
+              </div>
+            </div>
+
+            {/* Benchmark comparison row */}
+            <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap"}}>
+              {BENCHMARK_TICKERS.map(function(t) {
+                const br = r.benchReturns[t];
+                const teoBeatBench = br != null && r.teoReturn > br;
+                return (
+                  <div key={t} style={{flex:"1 1 90px",background:C.bg3,border:"1px solid " + C.border,borderRadius:6,padding:"6px 10px"}}>
+                    <div style={{fontSize:8,letterSpacing:1,color:C.muted}}>{t}</div>
+                    {br != null ? (
+                      <div style={{fontSize:11,fontWeight:700,fontFamily:FS,color:teoBeatBench?C.green:C.red}}>
+                        {(br>=0?"+":"") + br.toFixed(2) + "%"} <span style={{fontSize:9,fontWeight:400,color:C.muted}}>{teoBeatBench?"\u2713":"\u2717"}</span>
+                      </div>
+                    ) : (
+                      <div style={{fontSize:11,color:C.dim,fontStyle:"italic"}}>not tracked</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Expanded detail */}
+            {expanded && (
+              <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid " + C.border}}>
+                {sp.snapshots && sp.snapshots.length > 1 && (
+                  <div style={{marginBottom:14}}>
+                    <ResponsiveContainer width="100%" height={120}>
+                      <LineChart data={(function() {
+                        const benchStart = cfg.benchmark ? configBenchStart(cfg, cfg.benchmark) : null;
+                        return [{ label: "Start", value: seed, bench: benchStart ? seed : null }].concat(
+                          sp.snapshots.map(function(s) {
+                            const benchPx = cfg.benchmark ? snapBenchPx(s, cfg.benchmark, cfg.benchmark) : null;
+                            return {
+                              label: s.timestamp,
+                              value: s.totalValue,
+                              bench: (benchStart && benchPx) ? seed * (benchPx / benchStart) : null,
+                            };
+                          })
+                        );
+                      })()}>
+                        <XAxis dataKey="label" tick={{fill:C.muted,fontSize:8}} axisLine={false} tickLine={false} />
+                        <YAxis domain={["auto","auto"]} tick={{fill:C.muted,fontSize:8}} axisLine={false} tickLine={false} width={56} tickFormatter={function(v){return "$"+Math.round(v);}} />
+                        <Tooltip content={function(props){ return <ChartTip {...props} seed={seed} benchTicker={cfg.benchmark} />; }} />
+                        <ReferenceLine y={seed} stroke={C.dim} strokeDasharray="3 3" />
+                        <Line type="monotone" dataKey="bench" stroke={C.benchLine} strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
+                        <Line type="monotone" dataKey="value" stroke={r.teoReturn>=0?C.green:C.red} strokeWidth={2} dot={{r:2,fill:r.teoReturn>=0?C.green:C.red}} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+                {sp.grade && (
+                  <div style={{marginBottom:10}}>
+                    <GradeCard grade={sp.grade} />
+                  </div>
+                )}
+                {(!sp.grade) && (
+                  <div style={{fontSize:10,color:C.dim,fontStyle:"italic",textAlign:"center"}}>No grade was run for this sprint.</div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Clear all history (operator only) */}
+      {isOperator && sprints.length > 0 && (
+        <div style={{marginTop:20,paddingTop:16,borderTop:"1px solid " + C.border,textAlign:"center"}}>
+          <button onClick={onClearRequest} style={{background:"transparent",color:C.red,border:"1px solid " + C.red + "55",padding:"8px 16px",borderRadius:6,cursor:"pointer",fontSize:10,fontFamily:F,letterSpacing:1}}>
+            {"\u26a0"} CLEAR ALL HISTORY
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// Modal asking the operator to type "WIPE" to confirm clearing all sprint history.
+function WipeConfirm({ onConfirm, onCancel }) {
+  const C = useC();
+  const [text, setText] = useState("");
+  const inp = {background:C.bg3,border:"1px solid " + C.border,color:C.text,padding:"10px 14px",borderRadius:6,fontSize:13,width:"100%",textAlign:"center",letterSpacing:2,fontFamily:F};
+  return (
+    <div style={{position:"fixed",inset:0,background:C.bgScrim,display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}}>
+      <div style={{background:C.bg2,border:"1px solid " + C.red + "55",borderRadius:14,padding:24,maxWidth:380,width:"100%",fontFamily:F}}>
+        <div style={{textAlign:"center",marginBottom:18}}>
+          <div style={{fontSize:28,marginBottom:8}}>{"\u26a0"}</div>
+          <div style={{fontSize:15,fontWeight:700,fontFamily:FS,color:C.text,marginBottom:8}}>Clear all sprint history?</div>
+          <div style={{fontSize:11,color:C.muted,lineHeight:1.7}}>This wipes every archived sprint permanently. The active sprint is not affected. Cannot be undone.</div>
+        </div>
+        <input type="text" value={text} onChange={function(e){setText(e.target.value);}} placeholder="type WIPE to confirm" autoFocus style={inp} />
+        <div style={{display:"flex",gap:8,marginTop:14}}>
+          <button onClick={onCancel} style={{flex:1,background:"transparent",color:C.muted,border:"1px solid " + C.border,padding:11,borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:F}}>CANCEL</button>
+          <button onClick={function(){ if(text==="WIPE") onConfirm(); }} disabled={text!=="WIPE"} style={{flex:1,background:text==="WIPE"?C.red:"transparent",color:text==="WIPE"?"#fff":C.dim,border:"1px solid " + (text==="WIPE"?C.red:C.border),padding:11,borderRadius:6,cursor:text==="WIPE"?"pointer":"not-allowed",fontSize:11,fontWeight:700,fontFamily:F,letterSpacing:1}}>WIPE</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // React Error Boundary — catches errors during rendering, mounting, or in lifecycle methods,
 // and shows them on screen instead of unmounting to a blank page.
 class ErrorBoundary extends React.Component {
@@ -684,6 +923,11 @@ function App() {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [, refreshTick] = useState(0); // forces re-render so "X seconds ago" updates
+  const [archive, setArchive] = useState({ sprints: [] });
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [expandedSprintIdx, setExpandedSprintIdx] = useState(null);
+  const [showWipeConfirm, setShowWipeConfirm] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   // Restore theme choice from device on mount.
   useEffect(function() {
@@ -703,7 +947,7 @@ function App() {
 
   const toggleTheme = function() { setTheme(t => t === "dark" ? "light" : "dark"); };
 
-  // On mount: fetch shared state from server, and try to restore operator code from this device.
+  // On mount: fetch shared state + archive from server, and try to restore operator code from this device.
   useEffect(function() {
     (async function() {
       try {
@@ -715,13 +959,29 @@ function App() {
           setState(BLANK);
         }
       } catch(e) { setState(BLANK); }
+      // Archive loads in parallel — failure here doesn't block the dashboard.
+      loadArchive();
       try {
         const saved = localStorage.getItem("teo_op_code");
         if (saved) setOperatorCode(saved);
       } catch(e) {}
       setLoading(false);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Refetch archive from server. Safe to call anytime.
+  const loadArchive = async function() {
+    setArchiveLoading(true);
+    try {
+      const r = await fetch("/api/archive");
+      if (r.ok) {
+        const body = await r.json();
+        setArchive(body && Array.isArray(body.sprints) ? body : { sprints: [] });
+      }
+    } catch(e) { /* silent */ }
+    setArchiveLoading(false);
+  };
 
   useEffect(function() {
     if (state && state.snapshots && state.snapshots.length) setSnapIdx(state.snapshots.length - 1);
@@ -755,14 +1015,13 @@ function App() {
 
   const isOperator = !!operatorCode;
 
-  // Fetch live prices for current holdings AND the configured benchmark.
+  // Fetch live prices for current holdings AND all three benchmarks always.
   // Free, no Anthropic, no tokens.
   const refreshPrices = async function() {
     if (!state) return;
     if (refreshing) return;
     const heldTickers = (state.holdings || []).map(h => h.ticker).filter(Boolean);
-    const benchTicker = state.config && state.config.benchmark;
-    const allTickers = Array.from(new Set(heldTickers.concat(benchTicker ? [benchTicker] : [])));
+    const allTickers = Array.from(new Set(heldTickers.concat(BENCHMARK_TICKERS)));
     if (!allTickers.length) return;
     setRefreshing(true);
     try {
@@ -778,11 +1037,10 @@ function App() {
     setRefreshing(false);
   };
 
-  // Auto-refresh prices every 60s while we have holdings or a benchmark configured.
+  // Auto-refresh prices every 60s. Benchmarks are always fetched so this runs
+  // whenever we have a loaded state, regardless of whether the operator has deployed yet.
   useEffect(function() {
-    const haveHoldings = state && state.holdings && state.holdings.length;
-    const haveBench = state && state.config && state.config.benchmark;
-    if (!haveHoldings && !haveBench) return;
+    if (!state) return;
     refreshPrices();
     const id = setInterval(function() {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
@@ -793,7 +1051,6 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     state && state.holdings && state.holdings.map(h => h.ticker).join(","),
-    state && state.config && state.config.benchmark,
   ]);
 
   // Tick every 15s so the "Xs ago" label stays fresh between refreshes.
@@ -802,7 +1059,7 @@ function App() {
     return function() { clearInterval(id); };
   }, []);
 
-  // Fetch current price for a single ticker. Used to capture benchmark prices.
+  // Fetch current price for a single ticker. Used as a one-shot helper.
   const fetchOnePrice = async function(ticker) {
     if (!ticker) return null;
     try {
@@ -814,14 +1071,23 @@ function App() {
     } catch(e) { return null; }
   };
 
+  // Fetch current prices for all three benchmarks in one batched call. Returns
+  // a map { VTI: x, SPY: y, QQQ: z } with any failed fetches simply omitted.
+  const fetchAllBenchmarks = async function() {
+    try {
+      const r = await fetch("/api/prices?tickers=" + BENCHMARK_TICKERS.join(","));
+      if (!r.ok) return {};
+      const body = await r.json();
+      return (body && body.prices) || {};
+    } catch(e) { return {}; }
+  };
+
   // For the first deploy, doDecision is called with a config object — that config
   // is what was just selected on the ConfigForm. For subsequent CHECK & DECIDE calls,
   // config is omitted and we use whatever was baked into state on the first deploy.
   const doDecision = async function(deployConfig) {
     if (busy) return; setBusy(true); setError(null);
 
-    // Resolve effective starting state (either current state, or a freshly-seeded one
-    // if this is the first deploy with a new config).
     let baseState = state;
     if (deployConfig) {
       baseState = Object.assign({}, BLANK, {
@@ -833,12 +1099,22 @@ function App() {
     }
     let effectiveConfig = (baseState && baseState.config) || deployConfig || DEFAULT_CONFIG;
 
-    // Capture benchmark price for this snapshot. On first deploy, also lock in
-    // the starting benchmark price so we can compute the comparison forever.
-    const benchTicker = effectiveConfig.benchmark;
-    let benchPxNow = benchTicker ? await fetchOnePrice(benchTicker) : null;
-    if (deployConfig && benchPxNow != null) {
-      effectiveConfig = Object.assign({}, effectiveConfig, { benchmarkStart: benchPxNow });
+    // Capture benchmark prices (all three) for this snapshot. On first deploy,
+    // also lock in the starting prices so the Track Record has a baseline for each.
+    const benchPrices = await fetchAllBenchmarks();
+    const primaryTicker = effectiveConfig.benchmark;
+    const benchPxNow = primaryTicker && typeof benchPrices[primaryTicker] === "number"
+      ? benchPrices[primaryTicker]
+      : null;
+    if (deployConfig) {
+      const starts = {};
+      BENCHMARK_TICKERS.forEach(function(t) {
+        if (typeof benchPrices[t] === "number") starts[t] = benchPrices[t];
+      });
+      effectiveConfig = Object.assign({}, effectiveConfig, {
+        benchmarkStart: benchPxNow, // legacy field, kept for backward compat
+        benchmarkStarts: starts,    // new shape
+      });
       baseState = Object.assign({}, baseState, { config: effectiveConfig });
     }
 
@@ -851,7 +1127,8 @@ function App() {
         index: baseState.snapshots.length,
         timestamp: new Date().toLocaleString(),
         macro: macro,
-        benchmarkPrice: benchPxNow, // null if we couldn't fetch — chart handles that
+        benchmarkPrice: benchPxNow,          // legacy primary
+        benchmarkPrices: benchPrices,         // new shape — all three
         pricedIn: d.priced_in || [],
         opportunities: d.opportunities || [],
         earningsNearby: d.earnings_nearby || [],
@@ -870,6 +1147,7 @@ function App() {
         prevValue: baseState.totalValue,
       };
       var next = Object.assign({}, baseState, {
+        config: effectiveConfig, // explicit — don't rely on Object.assign inheritance
         holdings: d.holdings_after || [],
         cash: d.cash_after || 0,
         totalValue: res.totalValue,
@@ -894,10 +1172,55 @@ function App() {
     setGrading(false);
   };
 
+  // RESET = archive current sprint + clear active state. Server does both atomically.
+  // On success, refetch archive (so the new entry appears in Track Record immediately)
+  // and reset local state to BLANK so the splash shows.
   const doReset = async function() {
     if (!isOperator) return;
-    await save(BLANK);
-    setState(BLANK); setError(null); setTab("latest");
+    if (archiving) return;
+    setArchiving(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-operator-code": operatorCode || "" },
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error("Archive failed: " + r.status + (t ? " " + t.slice(0,200) : ""));
+      }
+      await loadArchive();
+      setState(BLANK);
+      setTab("latest");
+      setSnapIdx(0);
+      setLivePrices({});
+    } catch(e) {
+      setError(e.message);
+    }
+    setArchiving(false);
+  };
+
+  // Nuclear — wipe the entire sprint history. Requires explicit WIPE confirmation.
+  const doClearArchive = async function() {
+    if (!isOperator) return;
+    setError(null);
+    try {
+      const r = await fetch("/api/clear-archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-operator-code": operatorCode || "" },
+        body: JSON.stringify({ confirm: "WIPE" }),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error("Clear archive failed: " + r.status + (t ? " " + t.slice(0,200) : ""));
+      }
+      setArchive({ sprints: [] });
+      setShowWipeConfirm(false);
+      setExpandedSprintIdx(null);
+    } catch(e) {
+      setError(e.message);
+    }
   };
 
   if (loading || !state) return (
@@ -932,6 +1255,7 @@ function App() {
   var isUp = totalReturn >= 0;
   var isFirst = !state.snapshots.length;
   var opEl = showOpLogin ? <OperatorLogin onSubmit={handleOpSubmit} onCancel={function(){setShowOpLogin(false);}} /> : null;
+  var wipeEl = showWipeConfirm ? <WipeConfirm onConfirm={doClearArchive} onCancel={function(){setShowWipeConfirm(false);}} /> : null;
 
   // ── Benchmark comparison ────────────────────────────────────────────────
   // Compute the benchmark's live value (normalized so it starts at seedAmt) and
@@ -979,17 +1303,18 @@ function App() {
     <ThemeContext.Provider value={C}>
       <div>
         {opEl}
+        {wipeEl}
         <div style={{position:"fixed",top:14,right:14,zIndex:50}}>
           <button onClick={toggleTheme} style={{background:C.bg2,color:C.text,border:"1px solid " + C.border,borderRadius:20,padding:"6px 12px",cursor:"pointer",fontSize:11,fontFamily:F}}>{theme==="dark"?"\u263c light":"\u263e dark"}</button>
         </div>
-        <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 16px",fontFamily:F}}>
-          <div style={{maxWidth:480,width:"100%"}} className="fu">
-            <div style={{textAlign:"center",marginBottom:32}}>
+        <div style={{background:C.bg,minHeight:"100vh",padding:"24px 16px 60px",fontFamily:F}}>
+          <div style={{maxWidth:archive.sprints.length>0?700:480,width:"100%",margin:"0 auto"}} className="fu">
+            <div style={{textAlign:"center",marginBottom:28}}>
               <div style={{fontSize:10,letterSpacing:5,color:C.gold,marginBottom:10}}>{"\u25c8"} TEO CAPITAL {"\u25c8"}</div>
-              <div style={{fontSize:34,fontWeight:800,fontFamily:FS,color:C.text,lineHeight:1.1,marginBottom:10}}>New Sprint</div>
+              <div style={{fontSize:34,fontWeight:800,fontFamily:FS,color:C.text,lineHeight:1.1,marginBottom:10}}>{archive.sprints.length>0 ? "Between Sprints" : "New Sprint"}</div>
               <div style={{fontSize:12,color:C.textdim,lineHeight:1.9,marginTop:8}}>Elite AI trader. Real prices. Risk-managed framework.</div>
             </div>
-            {!isOperator && (
+            {!isOperator && archive.sprints.length === 0 && (
               <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:12,padding:"18px 20px",marginBottom:22}}>
                 {[
                   "Position sizing by conviction & risk-reward",
@@ -1009,12 +1334,24 @@ function App() {
             {isOperator ? (
               <ConfigForm onDeploy={function(cfg){ doDecision(cfg); }} />
             ) : (
-              <div style={{background:C.bg2,border:"1px dashed " + C.border,borderRadius:10,padding:"18px 20px",textAlign:"center"}}>
-                <div style={{fontSize:11,color:C.textdim,lineHeight:1.8,marginBottom:14}}>Teo hasn't deployed capital yet. Only the operator can start a sprint.</div>
+              <div style={{background:C.bg2,border:"1px dashed " + C.border,borderRadius:10,padding:"18px 20px",textAlign:"center",marginBottom:archive.sprints.length>0?22:0}}>
+                <div style={{fontSize:11,color:C.textdim,lineHeight:1.8,marginBottom:14}}>{archive.sprints.length>0 ? "No active sprint right now. Past sprints are shown below." : "Teo hasn't deployed capital yet. Only the operator can start a sprint."}</div>
                 <button onClick={function(){setShowOpLogin(true);}} style={{background:"transparent",color:C.gold,border:"1px solid " + C.gold + "55",padding:"10px 20px",borderRadius:8,cursor:"pointer",fontSize:11,fontFamily:F,letterSpacing:1}}>{"\ud83d\udd11"} OPERATOR LOGIN</button>
               </div>
             )}
             {error && <div style={{marginTop:10,padding:10,background:C.red+"15",border:"1px solid " + C.red + "33",borderRadius:6,color:C.red,fontSize:10}}>{error}</div>}
+            {archive.sprints.length > 0 && (
+              <div style={{marginTop:24}}>
+                <HistoryView
+                  archive={archive}
+                  loading={archiveLoading}
+                  isOperator={isOperator}
+                  expandedIdx={expandedSprintIdx}
+                  setExpandedIdx={setExpandedSprintIdx}
+                  onClearRequest={function(){ setShowWipeConfirm(true); }}
+                />
+              </div>
+            )}
             <div style={{textAlign:"center",marginTop:14,fontSize:9,color:C.dim}}>SIMULATED {"\u00b7"} REAL PRICES {"\u00b7"} NOT FINANCIAL ADVICE</div>
           </div>
         </div>
@@ -1039,6 +1376,7 @@ function App() {
     <ThemeContext.Provider value={C}>
       <div>
         {opEl}
+        {wipeEl}
         <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:F,padding:"16px 16px 90px",maxWidth:900,margin:"0 auto"}}>
           <div style={{position:"fixed",top:14,right:14,zIndex:50}}>
             <button onClick={toggleTheme} style={{background:C.bg2,color:C.text,border:"1px solid " + C.border,borderRadius:20,padding:"6px 12px",cursor:"pointer",fontSize:11,fontFamily:F}}>{theme==="dark"?"\u263c light":"\u263e dark"}</button>
@@ -1130,15 +1468,17 @@ function App() {
 
         {/* Tabs */}
         <div style={{display:"flex",gap:4,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
-          {[["latest","LATEST"],["positions","POSITIONS"],["history","HISTORY"],["grade","GRADE"]].map(function(pair) {
+          {[["latest","LATEST"],["positions","POSITIONS"],["decisions","DECISIONS"],["record","RECORD"],["grade","GRADE"]].map(function(pair) {
             var t = pair[0], label = pair[1];
+            const showStar = t==="grade" && state.grade;
+            const showCount = t==="record" && archive.sprints.length > 0;
             return <button key={t} onClick={function(){setTab(t);}} style={{
               background:tab===t?C.bg2:"transparent",border:"1px solid " + (tab===t?C.gold+"55":C.border),
               color:tab===t?C.gold:C.muted,padding:"5px 14px",borderRadius:6,cursor:"pointer",
               fontSize:10,letterSpacing:1,fontFamily:F,
-            }}>{label}{t==="grade"&&state.grade?" \u2605":""}</button>;
+            }}>{label}{showStar?" \u2605":""}{showCount?" " + archive.sprints.length:""}</button>;
           })}
-          {tab==="history" && state.snapshots.length > 0 && (
+          {tab==="decisions" && state.snapshots.length > 0 && (
             <div style={{display:"flex",gap:3,marginLeft:6,overflowX:"auto"}}>
               {state.snapshots.map(function(s,i) {
                 return <button key={i} onClick={function(){setSnapIdx(i);}} style={{
@@ -1275,10 +1615,10 @@ function App() {
           </div>
         )}
 
-        {/* HISTORY */}
-        {tab==="history" && (
+        {/* DECISIONS — walk through each snapshot of the current sprint */}
+        {tab==="decisions" && (
           <div className="fu">
-            {!state.snapshots.length && <div style={{color:C.muted,fontSize:11}}>No history.</div>}
+            {!state.snapshots.length && <div style={{color:C.muted,fontSize:11}}>No decisions yet.</div>}
             {viewSnap && (
               <div>
                 <div style={{background:C.bg2,border:"1px solid " + C.border,borderRadius:10,padding:14,marginBottom:12}}>
@@ -1290,6 +1630,18 @@ function App() {
               </div>
             )}
           </div>
+        )}
+
+        {/* RECORD — track record across all archived sprints */}
+        {tab==="record" && (
+          <HistoryView
+            archive={archive}
+            loading={archiveLoading}
+            isOperator={isOperator}
+            expandedIdx={expandedSprintIdx}
+            setExpandedIdx={setExpandedSprintIdx}
+            onClearRequest={function(){ setShowWipeConfirm(true); }}
+          />
         )}
 
         {/* GRADE */}
@@ -1338,7 +1690,7 @@ function App() {
               background:"transparent",color:grading?C.muted:C.gold,border:"1px solid " + C.gold + "44",
               padding:"12px 16px",borderRadius:8,cursor:grading||!state.snapshots.length?"not-allowed":"pointer",fontSize:11,fontFamily:F,
             }}>{"\u2605"} GRADE</button>
-            <button onClick={function(){ if(confirm("Wipe all portfolio state? This cannot be undone.")) doReset(); }} style={{background:"transparent",color:C.dim,border:"1px solid " + C.dim,padding:"12px 10px",borderRadius:8,cursor:"pointer",fontSize:9,fontFamily:F}}>RESET</button>
+            <button onClick={function(){ if(confirm("End this sprint and archive it to Track Record? Active state will be cleared. This cannot be undone.")) doReset(); }} disabled={archiving} style={{background:"transparent",color:archiving?C.muted:C.dim,border:"1px solid " + (archiving?C.muted:C.dim),padding:"12px 10px",borderRadius:8,cursor:archiving?"not-allowed":"pointer",fontSize:9,fontFamily:F}}>{archiving ? "ARCHIVING..." : "END SPRINT"}</button>
           </div>
         ) : null}
       </div>
