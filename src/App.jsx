@@ -960,195 +960,43 @@ function HistoryView({ archive, loading, isOperator, expandedIdx, setExpandedIdx
 
 
 // ── TEO CHARACTER ─────────────────────────────────────────────────────────
-// Middle-aged Southern Italian guy with a slight receding hairline. One base figure,
-// five poses for different stages of the model's deliberation. Used on the thinking
-// screen so the wait feels productive instead of stalled.
+// Five poses rendered as <img> tags pointing at PNGs in /public/character/.
+// If an image fails to load for any reason, falls back to a simple emoji
+// representation so the loading screen never breaks.
 
 const TEO_PHASES = [
-  { pose: "reading",    text: "Reading the market news…" },
-  { pose: "charting",   text: "Reviewing price action…" },
-  { pose: "thinking",   text: "Weighing the positions…" },
-  { pose: "calculating",text: "Sizing the trades…" },
-  { pose: "writing",    text: "Drafting the thesis…" },
+  { pose: "reading",    text: "Reading the market news…",  emoji: "\ud83d\udcf0" },
+  { pose: "charting",   text: "Reviewing price action…",   emoji: "\ud83d\udcc8" },
+  { pose: "thinking",   text: "Weighing the positions…",   emoji: "\ud83e\udd14" },
+  { pose: "calculating",text: "Sizing the trades…",        emoji: "\ud83e\uddee" },
+  { pose: "writing",    text: "Drafting the thesis…",      emoji: "\u270d\ufe0f" },
 ];
 
 function TeoCharacter({ pose }) {
   const C = useC();
-  const skin = "#d4a87a";        // olive Mediterranean
-  const skinShade = "#a87d4f";
-  const hair = "#1f1410";        // dark brown / near-black
-  const hairGray = "#5a4a3e";    // slight grey at temples
-  const shirt = theme => theme === "light" ? "#2c3e50" : "#1e1e35";
+  const phase = TEO_PHASES.find(p => p.pose === pose) || TEO_PHASES[0];
+  const [errored, setErrored] = useState(false);
 
-  // Reused base: head, hair, face, neck, shoulders. Rendered the same in every pose.
-  const Base = () => (
-    <g>
-      {/* Shoulders / shirt */}
-      <path d="M 28 200 Q 28 138 100 138 Q 172 138 172 200 Z" fill={C.bg2 === "#ffffff" ? "#2c3e50" : "#1e1e35"}/>
-      {/* Collar suggestion */}
-      <path d="M 88 138 L 100 152 L 112 138" stroke={C.muted} strokeWidth="1.2" fill="none" opacity="0.6"/>
-      {/* Neck */}
-      <rect x="88" y="120" width="24" height="22" fill={skin}/>
-      <line x1="88" y1="138" x2="88" y2="142" stroke={skinShade} strokeWidth="0.6"/>
-      {/* Head */}
-      <ellipse cx="100" cy="80" rx="36" ry="42" fill={skin}/>
-      {/* Slight jaw shadow */}
-      <path d="M 70 100 Q 100 130 130 100" stroke={skinShade} strokeWidth="0.5" fill="none" opacity="0.5"/>
-
-      {/* Hair: receding M-shape — two separate tufts at temples with bare patch in middle */}
-      <path d="M 64 62
-               Q 60 44 80 42
-               Q 92 42 96 56
-               L 96 62
-               Q 90 58 82 60
-               Q 72 62 66 70
-               Q 62 70 64 62 Z" fill={hair}/>
-      <path d="M 136 62
-               Q 140 44 120 42
-               Q 108 42 104 56
-               L 104 62
-               Q 110 58 118 60
-               Q 128 62 134 70
-               Q 138 70 136 62 Z" fill={hair}/>
-      {/* Grey at temples */}
-      <path d="M 64 64 Q 62 56 68 54" stroke={hairGray} strokeWidth="2" fill="none" opacity="0.6"/>
-      <path d="M 136 64 Q 138 56 132 54" stroke={hairGray} strokeWidth="2" fill="none" opacity="0.6"/>
-      {/* Back of hair behind head */}
-      <path d="M 64 64 Q 60 90 70 110 L 76 110 Q 70 94 72 70 Z" fill={hair}/>
-      <path d="M 136 64 Q 140 90 130 110 L 124 110 Q 130 94 128 70 Z" fill={hair}/>
-
-      {/* Strong dark eyebrows */}
-      <path d="M 76 76 Q 82 73 90 76" stroke={hair} strokeWidth="3" strokeLinecap="round" fill="none"/>
-      <path d="M 124 76 Q 118 73 110 76" stroke={hair} strokeWidth="3" strokeLinecap="round" fill="none"/>
-
-      {/* Eyes — small filled ovals */}
-      <ellipse cx="84" cy="85" rx="2.2" ry="2.6" fill={hair}/>
-      <ellipse cx="116" cy="85" rx="2.2" ry="2.6" fill={hair}/>
-
-      {/* Classical nose — bridge + nostrils */}
-      <path d="M 100 88 Q 96 105 99 112 Q 100 114 101 114 Q 102 114 101 112 Q 104 105 100 88" fill="none" stroke={skinShade} strokeWidth="1.2" strokeLinecap="round"/>
-
-      {/* Mouth — slight closed smile */}
-      <path d="M 90 122 Q 100 126 110 122" stroke={hair} strokeWidth="1.5" fill="none" strokeLinecap="round"/>
-
-      {/* Light stubble — dotted texture along jaw/chin */}
-      {[
-        [82,118],[88,124],[94,127],[100,128],[106,127],[112,124],[118,118],
-        [84,114],[92,121],[100,123],[108,121],[116,114],
-      ].map(function(p, i){ return <circle key={i} cx={p[0]} cy={p[1]} r="0.6" fill={hair} opacity="0.45"/>; })}
-
-      {/* Ears */}
-      <ellipse cx="64" cy="85" rx="4" ry="6" fill={skin}/>
-      <ellipse cx="136" cy="85" rx="4" ry="6" fill={skin}/>
-    </g>
-  );
-
-  // Pose-specific accessories layered on top of the base.
-  const Accessory = function() {
-    if (pose === "reading") {
-      return (
-        <g>
-          {/* Tablet held in front, slightly tilted */}
-          <rect x="40" y="158" width="120" height="40" rx="4" fill={C.bg3} stroke={C.gold} strokeWidth="1.5"/>
-          <line x1="50" y1="170" x2="100" y2="170" stroke={C.gold} strokeWidth="1" opacity="0.8"/>
-          <line x1="50" y1="176" x2="120" y2="176" stroke={C.muted} strokeWidth="0.8" opacity="0.7"/>
-          <line x1="50" y1="182" x2="110" y2="182" stroke={C.muted} strokeWidth="0.8" opacity="0.7"/>
-          <line x1="50" y1="188" x2="135" y2="188" stroke={C.muted} strokeWidth="0.8" opacity="0.7"/>
-          {/* Eyes shifted down slightly when reading */}
-          <ellipse cx="84" cy="87" rx="2.2" ry="2.2" fill={C.bg}/>
-          <ellipse cx="116" cy="87" rx="2.2" ry="2.2" fill={C.bg}/>
-          <ellipse cx="84" cy="88" rx="2.2" ry="2.6" fill={hair}/>
-          <ellipse cx="116" cy="88" rx="2.2" ry="2.6" fill={hair}/>
-        </g>
-      );
-    }
-    if (pose === "charting") {
-      return (
-        <g>
-          {/* Chart panel floating to the right */}
-          <rect x="142" y="40" width="52" height="40" rx="3" fill={C.bg3} stroke={C.border} strokeWidth="1"/>
-          <polyline points="146,72 154,60 162,66 170,52 178,58 186,46 190,50" stroke={C.green} strokeWidth="1.5" fill="none"/>
-          <line x1="146" y1="76" x2="190" y2="76" stroke={C.muted} strokeWidth="0.5" opacity="0.4"/>
-          {/* Up arrow on chart */}
-          <polygon points="190,48 194,52 186,52" fill={C.green}/>
-          {/* Eyes looking right */}
-          <ellipse cx="86" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
-          <ellipse cx="118" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
-          <ellipse cx="87" cy="85" rx="2" ry="2.4" fill={hair}/>
-          <ellipse cx="119" cy="85" rx="2" ry="2.4" fill={hair}/>
-        </g>
-      );
-    }
-    if (pose === "thinking") {
-      return (
-        <g>
-          {/* Thought bubble above head */}
-          <ellipse cx="155" cy="35" rx="28" ry="18" fill={C.bg2} stroke={C.gold} strokeWidth="1.5"/>
-          <circle cx="138" cy="58" r="4" fill={C.bg2} stroke={C.gold} strokeWidth="1.2"/>
-          <circle cx="132" cy="68" r="2.5" fill={C.bg2} stroke={C.gold} strokeWidth="1"/>
-          <text x="155" y="40" textAnchor="middle" fill={C.gold} fontSize="13" fontWeight="700" fontFamily="serif">?</text>
-          {/* Hand on chin */}
-          <ellipse cx="100" cy="138" rx="14" ry="10" fill={skin}/>
-          <path d="M 96 132 Q 100 128 104 132" stroke={skinShade} strokeWidth="0.8" fill="none"/>
-          {/* Eyes looking up */}
-          <ellipse cx="84" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
-          <ellipse cx="116" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
-          <ellipse cx="84" cy="83" rx="2" ry="2.4" fill={hair}/>
-          <ellipse cx="116" cy="83" rx="2" ry="2.4" fill={hair}/>
-        </g>
-      );
-    }
-    if (pose === "calculating") {
-      return (
-        <g>
-          {/* Spreadsheet/numbers in front */}
-          <rect x="44" y="160" width="112" height="38" rx="3" fill={C.bg3} stroke={C.border} strokeWidth="1"/>
-          {[[52,170,"$"],[80,170,"%"],[108,170,"#"],[136,170,"="]].map(function(t,i){
-            return <text key={i} x={t[0]} y={t[1]} fill={C.gold} fontSize="9" fontFamily="monospace" fontWeight="700">{t[2]}</text>;
-          })}
-          <line x1="52" y1="178" x2="148" y2="178" stroke={C.border} strokeWidth="0.5"/>
-          {[[52,188,"NVDA"],[88,188,"+12%"],[124,188,"BUY"]].map(function(t,i){
-            return <text key={i} x={t[0]} y={t[1]} fill={i===1?C.green:C.muted} fontSize="7" fontFamily="monospace">{t[2]}</text>;
-          })}
-          {/* Eyes down */}
-          <ellipse cx="84" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
-          <ellipse cx="116" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
-          <ellipse cx="84" cy="88" rx="2" ry="2.4" fill={hair}/>
-          <ellipse cx="116" cy="88" rx="2" ry="2.4" fill={hair}/>
-        </g>
-      );
-    }
-    if (pose === "writing") {
-      return (
-        <g>
-          {/* Notebook */}
-          <rect x="40" y="166" width="120" height="34" rx="2" fill={C.bg3} stroke={C.border} strokeWidth="1"/>
-          <line x1="50" y1="174" x2="120" y2="174" stroke={C.muted} strokeWidth="0.8" opacity="0.6"/>
-          <line x1="50" y1="182" x2="140" y2="182" stroke={C.muted} strokeWidth="0.8" opacity="0.6"/>
-          <line x1="50" y1="190" x2="100" y2="190" stroke={C.muted} strokeWidth="0.8" opacity="0.6"/>
-          {/* Pen */}
-          <rect x="138" y="156" width="3" height="24" fill={C.gold} transform="rotate(20 140 168)"/>
-          <polygon points="145,178 148,184 142,182" fill={hair} transform="rotate(20 140 168)"/>
-          {/* Eyes down focused */}
-          <ellipse cx="84" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
-          <ellipse cx="116" cy="85" rx="2.2" ry="2.6" fill={C.bg}/>
-          <ellipse cx="84" cy="89" rx="2" ry="2.4" fill={hair}/>
-          <ellipse cx="116" cy="89" rx="2" ry="2.4" fill={hair}/>
-        </g>
-      );
-    }
-    return null;
-  };
+  if (errored) {
+    return (
+      <div style={{width:200,height:200,display:"flex",alignItems:"center",justifyContent:"center",fontSize:80}}>
+        {phase.emoji}
+      </div>
+    );
+  }
 
   return (
-    <svg viewBox="0 0 200 200" width="180" height="180" xmlns="http://www.w3.org/2000/svg" style={{display:"block"}}>
-      <Base />
-      <Accessory />
-    </svg>
+    <img
+      src={"/character/teo-" + pose + ".png"}
+      alt={phase.text}
+      onError={function(){ setErrored(true); }}
+      style={{width:220,height:220,objectFit:"contain",display:"block"}}
+    />
   );
 }
 
 
+// Modal asking the operator to type "WIPE" to confirm clearing all sprint history.
 // Modal asking the operator to type "WIPE" to confirm clearing all sprint history.
 function WipeConfirm({ onConfirm, onCancel }) {
   const C = useC();
